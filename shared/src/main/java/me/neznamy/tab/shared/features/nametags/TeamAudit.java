@@ -37,6 +37,8 @@ public class TeamAudit {
     private static final int MAX_REPAIRS_PER_PAIR = 3;
     private static final long PRUNE_AFTER_MS = TimeUnit.MINUTES.toMillis(30);
     private static final int LOGGED_REPAIRS_PER_WINDOW = 10;
+    /** [6b6t patch r1] Max repairs in one tick (one second), so a mass breakage is spread over several ticks */
+    private static final int MAX_REPAIRS_PER_TICK = 50;
 
     /** Repair bookkeeping of one (viewer, team) pair */
     private static class RepairRecord {
@@ -58,6 +60,9 @@ public class TeamAudit {
     private int loggedInWindow;
     private long lastPrune;
 
+    /** Repairs done in the current tick */
+    private int repairsThisTick;
+
     /**
      * Runs one slice of the audit. Called every second on the NameTag thread.
      */
@@ -69,7 +74,9 @@ public class TeamAudit {
         long start = System.nanoTime();
         long now = System.currentTimeMillis();
         int checked = 0;
-        while (checked < viewers.length && System.nanoTime() - start < settings.auditSliceNanos) {
+        repairsThisTick = 0;
+        while (checked < viewers.length && repairsThisTick < MAX_REPAIRS_PER_TICK
+                && System.nanoTime() - start < settings.auditSliceNanos) {
             if (cursor >= viewers.length) cursor = 0;
             TabPlayer viewer = viewers[cursor++];
             checked++;
@@ -198,6 +205,7 @@ public class TeamAudit {
      * Runs a repair unless this (viewer, team) pair was repaired recently or too often.
      */
     private void repair(@NotNull TabPlayer viewer, @NotNull String teamName, @NotNull String reason, long now, @NotNull Runnable action) {
+        if (repairsThisTick >= MAX_REPAIRS_PER_TICK) return; // next pass picks it up
         String key = viewer.getUniqueId() + "|" + teamName;
         RepairRecord record = repairs.get(key);
         if (record != null) {
@@ -215,6 +223,7 @@ public class TeamAudit {
         }
         record.count++;
         record.last = now;
+        repairsThisTick++;
         action.run();
         PatchStats.auditRepaired.incrementAndGet();
         if (now - logWindowStart > REPAIR_COOLDOWN_MS) {
