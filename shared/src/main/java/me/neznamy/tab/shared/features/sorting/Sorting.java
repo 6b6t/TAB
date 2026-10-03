@@ -167,7 +167,9 @@ public class Sorting extends RefreshableFeature implements SortingManager, JoinL
             if (!nameTaken && proxy != null && nameTags != null) {
                 for (ProxyPlayer all : proxy.getProxyPlayers().values()) {
                     // [6b6t patch] a (queued / stale) copy of the same player must not push him to "...B"
-                    if (all.getUniqueId().equals(p.getUniqueId())) continue;
+                    // (only with stale-guard on: without it the copy is not retired and its late quit would remove
+                    // the shared "...A" team, so keep upstream's "...B" then)
+                    if (all.getUniqueId().equals(p.getUniqueId()) && me.neznamy.tab.shared.patch6b6t.PatchSettings.get().staleGuard) continue;
                     if (all.getNametag() != null && potentialTeamName.equals(all.getNametag().getResolvedTeamName())) {
                         nameTaken = true;
                         break;

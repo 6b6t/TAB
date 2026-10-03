@@ -77,6 +77,9 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
     /** Origins that sent at least one heartbeat (= run the patched TAB) */
     @NotNull private final Set<String> heartbeatOrigins = ConcurrentHashMap.newKeySet();
 
+    /** [6b6t patch r1] Origins whose copies were removed as ghosts; when they speak again, request a full Load */
+    @NotNull private final Set<String> gcOrigins = ConcurrentHashMap.newKeySet();
+
     /** Last time our own heartbeat came back over the messenger (proves our link works) */
     private volatile long lastOwnHeartbeatEcho;
 
@@ -139,6 +142,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         // [6b6t patch] remember the sender (header), not part of the message format
         proxyMessage.setSourceProxy(proxy);
         lastSeen.put(proxy, System.currentTimeMillis());
+        resyncIfGhosted(proxy);
 
         // Queue the task to make sure it does not execute before plugin fully loads, causing NPE
         TAB.getInstance().getCpu().runMeasuredTask(getFeatureName(), CpuUsageCategory.PROXY_MESSAGE, () -> {
@@ -179,7 +183,11 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         sendHeartbeat(); // [6b6t patch] announce at once, so others know this proxy runs the patch
         // [6b6t patch] tombstone expiry + heartbeat + ghost removal, all on the Processing Thread
         TAB.getInstance().getCpu().getProcessingThread().repeatTask(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> {
-            guard.expire(System.currentTimeMillis(), PatchSettings.get().tombstoneTtlMillis);
+            long now = System.currentTimeMillis();
+            long ttl = PatchSettings.get().tombstoneTtlMillis;
+            guard.expire(now, ttl);
+            // [6b6t patch r1] queued data whose join never came (stock origin, retired copy, dead origin)
+            queuedData.values().removeIf(q -> now - q.getCreatedAt() > Math.max(ttl, 60_000L));
             sendHeartbeat();
             removeGhosts();
         }, getFeatureName(), "6b6t maintenance"), HEARTBEAT_INTERVAL_MS);
@@ -325,12 +333,27 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
      */
     @NotNull
     public QueuedData queuedFor(@NotNull UUID id, @Nullable String source) {
-        QueuedData data = queuedData.get(id);
-        if (data != null && (source == null || Objects.equals(source, data.getSourceProxy()))) return data;
-        data = new QueuedData();
-        data.setSourceProxy(source);
-        queuedData.put(id, data);
-        return data;
+        // [6b6t patch r1] atomic: called from the Processing Thread and the NameTag thread at the same time
+        return queuedData.compute(id, (k, data) -> {
+            if (data != null && (source == null || Objects.equals(source, data.getSourceProxy()))) return data;
+            QueuedData fresh = new QueuedData();
+            fresh.setSourceProxy(source);
+            return fresh;
+        });
+    }
+
+    /**
+     * [6b6t patch r1] When an origin whose copies were removed as ghosts speaks again (heartbeat or message),
+     * ask it for a full Load once, so its players come back without a rejoin. Any thread.
+     *
+     * @param   origin
+     *          id of the proxy that sent something
+     */
+    private void resyncIfGhosted(@NotNull String origin) {
+        if (!gcOrigins.remove(origin)) return;
+        TAB.getInstance().getPlatform().logInfo(new TabTextComponent("[TAB-6b6t] Proxy " + shortId(origin)
+                + " is back after its players were removed as ghosts, requesting its players again", (TabTextColor) null));
+        TAB.getInstance().getCpu().runMeasuredTask(getFeatureName(), CpuUsageCategory.PROXY_MESSAGE, () -> sendMessage(new LoadRequest()));
     }
 
     /**
@@ -359,6 +382,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
             TAB.getInstance().getPlatform().logInfo(new TabTextComponent("[TAB-6b6t] Heartbeat from proxy " + shortId(origin) + " (runs the patched TAB)", (TabTextColor) null));
         }
         lastSeen.put(origin, now);
+        resyncIfGhosted(origin);
     }
 
     /**
@@ -381,6 +405,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
             proxyPlayers.remove(copy.getUniqueId(), copy);
             PatchStats.ghostsRemoved.incrementAndGet();
             removed.merge(origin, 1, Integer::sum);
+            gcOrigins.add(origin);
         }
         queuedData.values().removeIf(q -> q.getSourceProxy() != null && heartbeatOrigins.contains(q.getSourceProxy())
                 && now - lastSeen.getOrDefault(q.getSourceProxy(), 0L) > GHOST_SILENCE_MS);

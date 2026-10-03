@@ -44,6 +44,9 @@ public class QueuedData {
     @Nullable
     private String sourceProxy;
 
+    /** [6b6t patch r1] Creation time, entries older than the tombstone TTL are expired by the maintenance task */
+    private final long createdAt = System.currentTimeMillis();
+
     /** Name of server the player is connected to */
     @NotNull
     public Server server;
