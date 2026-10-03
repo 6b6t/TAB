@@ -166,6 +166,8 @@ public class Sorting extends RefreshableFeature implements SortingManager, JoinL
             }
             if (!nameTaken && proxy != null && nameTags != null) {
                 for (ProxyPlayer all : proxy.getProxyPlayers().values()) {
+                    // [6b6t patch] a (queued / stale) copy of the same player must not push him to "...B"
+                    if (all.getUniqueId().equals(p.getUniqueId())) continue;
                     if (all.getNametag() != null && potentialTeamName.equals(all.getNametag().getResolvedTeamName())) {
                         nameTaken = true;
                         break;

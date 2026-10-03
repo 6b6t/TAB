@@ -5,6 +5,7 @@ import com.google.common.io.ByteArrayDataOutput;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.cpu.ThreadExecutor;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
+import me.neznamy.tab.shared.features.proxy.StaleMessageGuard;
 import me.neznamy.tab.shared.platform.TabList;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -12,6 +13,65 @@ import org.jetbrains.annotations.Nullable;
 import java.util.UUID;
 
 public abstract class ProxyMessage {
+
+    /**
+     * [6b6t patch] Id of the proxy that sent this message, taken from the message header.
+     * Not part of the wire format (set by the receiver), so the format stays compatible with unpatched TAB.
+     */
+    @Nullable
+    private String sourceProxy;
+
+    /**
+     * [6b6t patch] Returns id of the proxy that sent this message, {@code null} for outgoing messages.
+     *
+     * @return  id of the sending proxy
+     */
+    @Nullable
+    public String getSourceProxy() {
+        return sourceProxy;
+    }
+
+    /**
+     * [6b6t patch] Sets id of the proxy that sent this message.
+     *
+     * @param   sourceProxy
+     *          id of the sending proxy
+     */
+    public void setSourceProxy(@Nullable String sourceProxy) {
+        this.sourceProxy = sourceProxy;
+    }
+
+    /**
+     * [6b6t patch] Returns UUID of the player this message is about, {@code null} if it is not about one player.
+     *
+     * @return  UUID of the player this message is about
+     */
+    @Nullable
+    public UUID getSubjectId() {
+        return null;
+    }
+
+    /**
+     * [6b6t patch] Returns kind of this message for {@link StaleMessageGuard}.
+     *
+     * @return  kind of this message
+     */
+    @NotNull
+    public StaleMessageGuard.Kind getGuardKind() {
+        return StaleMessageGuard.Kind.OTHER;
+    }
+
+    /**
+     * [6b6t patch] Stores this message only as queued data of its sending proxy, without applying
+     * it to the current remote copy (see {@link StaleMessageGuard.Verdict#QUEUE}).
+     * Default: nothing to queue, the message is dropped.
+     *
+     * @param   proxySupport
+     *          Proxy support feature
+     */
+    public void queue(@NotNull ProxySupport proxySupport) {
+        // Nothing to queue by default
+    }
 
     @Nullable
     public ThreadExecutor getCustomThread() {

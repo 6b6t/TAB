@@ -107,6 +107,9 @@ public abstract class TabPlayer implements me.neznamy.tab.api.TabPlayer {
     /** Data for scoreboard team */
     public final NameTagPlayerData teamData = new NameTagPlayerData(this);
 
+    /** [6b6t patch] Time of the last join / server switch, the team audit leaves fresh players alone */
+    public volatile long lastTeamStateChange = System.currentTimeMillis();
+
     /** Data for Layout */
     public final LayoutManagerImpl.PlayerData layoutData = new LayoutManagerImpl.PlayerData();
 

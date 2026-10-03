@@ -37,6 +37,13 @@ public class QueuedData {
     /** Whether player is vanished or not */
     private boolean vanished;
 
+    /** [6b6t patch] Whether {@link #vanished} was actually received (upstream applied the default {@code false} too) */
+    private boolean vanishedSet;
+
+    /** [6b6t patch] Proxy that sent this data; a join from another proxy must not pick it up */
+    @Nullable
+    private String sourceProxy;
+
     /** Name of server the player is connected to */
     @NotNull
     public Server server;

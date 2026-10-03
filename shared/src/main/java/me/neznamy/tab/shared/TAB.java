@@ -190,6 +190,10 @@ public class TAB extends TabAPI {
     public String load() {
         try {
             long time = System.currentTimeMillis();
+            // [6b6t patch] optional switches in plugins/tab/6b6t-patch.properties (never created or rewritten)
+            for (String warning : me.neznamy.tab.shared.patch6b6t.PatchSettings.load(dataFolder)) {
+                platform.logWarn(new TabTextComponent("[TAB-6b6t] " + warning, TabTextColor.RED));
+            }
             cpu = new CpuManager();
             dataManager = new DataManager();
             configuration = new Configs();
@@ -203,6 +207,7 @@ public class TAB extends TabAPI {
             platform.loadPlayers();
             command = new TabCommand();
             featureManager.load();
+            startPatchStatsLine();
             for (TabPlayer p : onlinePlayers) p.markAsLoaded(false);
             if (eventBus != null) eventBus.fire(TabLoadEventImpl.getInstance());
             cpu.enable();
@@ -224,6 +229,22 @@ public class TAB extends TabAPI {
             kill();
             return "&cFailed to enable due to an internal plugin error. Check console for more info.";
         }
+    }
+
+    /**
+     * [6b6t patch] Prints one "[TAB-6b6t] Nm: ..." counter line every N minutes (also when everything is 0,
+     * so the alert script can use it as a heartbeat). Runs on the Processing Thread.
+     */
+    private void startPatchStatsLine() {
+        int minutes = me.neznamy.tab.shared.patch6b6t.PatchSettings.get().statsIntervalMinutes;
+        if (minutes <= 0) return;
+        me.neznamy.tab.shared.patch6b6t.PatchStats.deltaLine(minutes, 0, 0); // reset the baseline after a reload
+        cpu.getProcessingThread().repeatTask(new me.neznamy.tab.shared.cpu.TimedCaughtTask(cpu, () -> {
+            me.neznamy.tab.shared.features.proxy.ProxySupport proxy = featureManager.getFeature(TabConstants.Feature.PROXY_SUPPORT);
+            int remote = proxy == null ? 0 : proxy.getProxyPlayers().size();
+            platform.logInfo(new TabTextComponent(me.neznamy.tab.shared.patch6b6t.PatchStats.deltaLine(minutes, onlinePlayers.length, remote),
+                    (TabTextColor) null));
+        }, "6b6t patch", "Stats line"), minutes * 60_000);
     }
 
     /**
