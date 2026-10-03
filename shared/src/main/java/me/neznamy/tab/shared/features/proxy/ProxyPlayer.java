@@ -71,6 +71,13 @@ public class ProxyPlayer {
     @NotNull
     private ConnectionState connectionState = ConnectionState.QUEUED;
 
+    /** [6b6t patch] Id of the proxy that sent the join of this copy ({@code null} if unknown) */
+    @Nullable
+    private String sourceProxy;
+
+    /** [6b6t patch] Last join / state change / server switch of this copy, the team audit skips fresh copies */
+    private volatile long lastChangeMillis = System.currentTimeMillis();
+
     /**
      * Constructs new instance with given parameters.
      *

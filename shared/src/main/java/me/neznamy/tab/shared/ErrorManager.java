@@ -12,9 +12,15 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.regex.Pattern;
+
+import me.neznamy.tab.shared.patch6b6t.PatchSettings;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
 
 /**
  * An error assistant to print internal errors into error file
@@ -77,6 +83,76 @@ public class ErrorManager {
     }
 
     /**
+     * [6b6t patch] Renames a full log to {@code <base>-<yyyyMMdd'T'HHmmss'Z'>.log} (UTC) and deletes the oldest
+     * rotated files of the same base beyond {@code keep}. Names end in ".log" on purpose: proxy-1's start-up
+     * rsync excludes *.log, so rotated files are neither copied from proxy-0 nor deleted there. Only files
+     * matching the strict pattern are ever deleted (hand-made files like errors-full-until-20260815.log are kept).
+     *
+     * @param   file
+     *          full log file
+     * @param   keep
+     *          number of rotated files to keep
+     * @return  {@code true} if rotated
+     */
+    public static synchronized boolean rotate(@NotNull File file, int keep) {
+        File dir = file.getAbsoluteFile().getParentFile();
+        String name = file.getName();
+        String base = name.endsWith(".log") ? name.substring(0, name.length() - 4) : name;
+        SimpleDateFormat stamp = new SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'");
+        stamp.setTimeZone(TimeZone.getTimeZone("UTC"));
+        String ts = stamp.format(new Date());
+        Pattern rotated = Pattern.compile("^" + Pattern.quote(base) + "-(\\d{8}T\\d{6}Z)(?:-(\\d{1,3}))?\\.log$");
+        // Several rotations within one second (never expected with 16 MB files): add an increasing suffix
+        long suffix = -1;
+        File[] sameSecond = dir.listFiles((d, n) -> {
+            java.util.regex.Matcher m = rotated.matcher(n);
+            return m.matches() && m.group(1).equals(ts);
+        });
+        if (sameSecond != null) {
+            // plain name counts as 0, "-N" as N
+            for (File f : sameSecond) suffix = Math.max(suffix, Math.max(0, rotationOrder(rotated, f.getName())[1]));
+        }
+        File target = new File(dir, base + "-" + ts + (suffix < 0 ? "" : "-" + (suffix + 1)) + ".log");
+        if (target.exists()) return false; // never overwrite (a rename would replace it silently)
+        try {
+            try {
+                Files.move(file.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(file.toPath(), target.toPath());
+            }
+        } catch (IOException e) {
+            return false;
+        }
+        PatchStats.logRotations.incrementAndGet();
+        File[] old = dir.listFiles((d, n) -> rotated.matcher(n).matches());
+        if (old != null && old.length > keep) {
+            // Oldest first: by timestamp, then by suffix (no suffix = first)
+            Arrays.sort(old, Comparator.comparing((File f) -> rotationOrder(rotated, f.getName())[0])
+                    .thenComparingLong(f -> rotationOrder(rotated, f.getName())[1]));
+            for (int i = 0; i < old.length - keep; i++) {
+                //noinspection ResultOfMethodCallIgnored
+                old[i].delete();
+            }
+        }
+        try {
+            TAB.getInstance().getPlatform().logInfo(new TabTextComponent("[TAB-6b6t] rotated " + name + " -> " + target.getName(), (TabTextColor) null));
+        } catch (Throwable ignored) {
+            // Not loaded (unit tests)
+        }
+        return true;
+    }
+
+    /**
+     * [6b6t patch] Sort key of a rotated file name: [timestamp as number, suffix (-1 if none)].
+     */
+    private static long[] rotationOrder(@NotNull Pattern rotated, @NotNull String name) {
+        java.util.regex.Matcher m = rotated.matcher(name);
+        if (!m.matches()) return new long[]{0, -1};
+        long ts = Long.parseLong(m.group(1).replace("T", "").replace("Z", ""));
+        return new long[]{ts, m.group(2) == null ? -1 : Long.parseLong(m.group(2))};
+    }
+
+    /**
      * Converts throwable into a list of lines.
      *
      * @param   t
@@ -112,6 +188,11 @@ public class ErrorManager {
      */
     public synchronized void printError(@Nullable String message, @NotNull List<String> error, boolean intoConsoleToo, @NotNull File file) {
         try {
+            // [6b6t patch] Fix 6: rotate at 16 MB instead of silently stopping to log forever.
+            // If the rotation fails, the old size guards below still stop writing, so the disk cannot fill.
+            if (PatchSettings.get().logRotation && file.length() >= TabConstants.MAX_LOG_SIZE) {
+                rotate(file, PatchSettings.get().rotationKeep);
+            }
             if (!file.exists()) Files.createFile(file.toPath());
             try (BufferedWriter buf = new BufferedWriter(new FileWriter(file, true))) {
                 if (message != null) {

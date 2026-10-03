@@ -55,7 +55,11 @@ public class Load extends ProxyMessage {
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         for (PlayerJoin join : decodedPlayers) {
-            join.process(proxySupport);
+            // [6b6t patch] every player in the list goes through the stale message guard like a single join
+            join.setSourceProxy(getSourceProxy());
+            if (proxySupport.acceptMessage(join)) {
+                join.process(proxySupport);
+            }
         }
     }
 }

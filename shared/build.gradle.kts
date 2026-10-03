@@ -45,3 +45,15 @@ sourceSets.main {
         }
     }
 }
+// [6b6t patch] unit tests for the 6b6t changes (not part of any jar)
+dependencies {
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testImplementation("com.google.guava:guava:31.1-jre")
+    testImplementation("net.kyori:adventure-api:4.25.0-SNAPSHOT")
+    testImplementation("net.kyori:adventure-text-minimessage:4.25.0-SNAPSHOT")
+}
+
+tasks.test {
+    useJUnitPlatform()
+}

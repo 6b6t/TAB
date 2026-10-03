@@ -82,15 +82,28 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
         out.writeBoolean(disabled);
     }
 
+    /** [6b6t patch] Player this message is about */
+    @Override
+    @NotNull
+    public UUID getSubjectId() {
+        return playerId;
+    }
+
+    /** [6b6t patch] Stores the data as queued data of the sending proxy */
+    @Override
+    public void queue(@NotNull ProxySupport proxySupport) {
+        QueuedData data = proxySupport.queuedFor(playerId, getSourceProxy());
+        if (data.getTabFormat() == null || data.getTabFormat().id < id)  {
+            data.setTabFormat(this);
+        }
+    }
+
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer target = proxySupport.getProxyPlayers().get(playerId);
         if (target == null) {
             unknownPlayer(playerId.toString(), "tablist format update");
-            QueuedData data = proxySupport.getQueuedData().computeIfAbsent(playerId, k -> new QueuedData());
-            if (data.getTabFormat() == null || data.getTabFormat().id < id)  {
-                data.setTabFormat(this);
-            }
+            queue(proxySupport);
             return;
         }
         if (target.getTabFormat() != null && target.getTabFormat().id > id) {
@@ -102,7 +115,7 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
         target.setTabFormat(this);
         if (target.getConnectionState() == ProxyPlayer.ConnectionState.CONNECTED) {
             if (disabled) {
-                if (!oldData.disabled) {
+                if (oldData == null || !oldData.disabled) { // [6b6t patch] null-safe (copy without earlier format)
                     for (TabPlayer viewer : TAB.getInstance().getOnlinePlayers()) {
                         viewer.getTabList().updateDisplayName(target.getTablistId(), null);
                     }

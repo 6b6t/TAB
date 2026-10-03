@@ -9,6 +9,7 @@ import me.neznamy.tab.shared.data.Server;
 import me.neznamy.tab.shared.features.proxy.ProxyPlayer;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.proxy.QueuedData;
+import me.neznamy.tab.shared.features.proxy.StaleMessageGuard;
 import me.neznamy.tab.shared.platform.TabList;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import org.jetbrains.annotations.NotNull;
@@ -73,21 +74,39 @@ public class PlayerJoin extends ProxyMessage {
         writeSkin(out, skin);
     }
 
+
+    /** [6b6t patch] Player this message is about */
+    @Override
+    @NotNull
+    public UUID getSubjectId() {
+        return uniqueId;
+    }
+
+    /** [6b6t patch] Kind for the stale message guard */
+    @Override
+    @NotNull
+    public StaleMessageGuard.Kind getGuardKind() {
+        return StaleMessageGuard.Kind.JOIN;
+    }
+
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer decodedPlayer = new ProxyPlayer(uniqueId, tablistId, name, server, vanished, staff, skin);
+        decodedPlayer.setSourceProxy(getSourceProxy()); // [6b6t patch] remember which proxy owns this copy
         if (proxySupport.getProxyPlayers().containsKey(decodedPlayer.getUniqueId())) {
             TAB.getInstance().debug("[Proxy Support] The proxy player " + decodedPlayer.getName() + " is already connected, cannot process join.");
             return;
         }
         proxySupport.getProxyPlayers().put(decodedPlayer.getUniqueId(), decodedPlayer);
         QueuedData data = proxySupport.getQueuedData().remove(decodedPlayer.getUniqueId());
-        if (data != null) {
+        // [6b6t patch] only take data queued by the same proxy (data of another proxy belongs to another session)
+        if (data != null && (data.getSourceProxy() == null || data.getSourceProxy().equals(getSourceProxy()))) {
             decodedPlayer.setBelowname(data.getBelowname());
             decodedPlayer.setTabFormat(data.getTabFormat());
             decodedPlayer.setNametag(data.getNametag());
             decodedPlayer.setPlayerlist(data.getPlayerlist());
-            decodedPlayer.setVanished(data.isVanished());
+            // [6b6t patch] upstream applied the default "false" even when no vanish update was queued
+            if (data.isVanishedSet()) decodedPlayer.setVanished(data.isVanished());
         }
         if (TAB.getInstance().getPlayer(decodedPlayer.getUniqueId()) == null) {
             TAB.getInstance().getFeatureManager().onJoin(decodedPlayer);

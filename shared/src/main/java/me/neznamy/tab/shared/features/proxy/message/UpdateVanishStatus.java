@@ -39,13 +39,27 @@ public class UpdateVanishStatus extends ProxyMessage {
         out.writeBoolean(vanished);
     }
 
+
+    /** [6b6t patch] Player this message is about */
+    @Override
+    @NotNull
+    public UUID getSubjectId() {
+        return playerId;
+    }
+
+    @Override
+    public void queue(@NotNull ProxySupport proxySupport) {
+        QueuedData data = proxySupport.queuedFor(playerId, getSourceProxy());
+        data.setVanished(vanished);
+        data.setVanishedSet(true);
+    }
+
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer target = proxySupport.getProxyPlayers().get(playerId);
         if (target == null) {
             unknownPlayer(playerId.toString(), "vanish status update");
-            QueuedData data = proxySupport.getQueuedData().computeIfAbsent(playerId, k -> new QueuedData());
-            data.setVanished(vanished);
+            queue(proxySupport);
             return;
         }
         target.setVanished(vanished);
