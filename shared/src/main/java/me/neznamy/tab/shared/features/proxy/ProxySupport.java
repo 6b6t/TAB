@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -82,6 +83,9 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
 
     /** Last time our own heartbeat came back over the messenger (proves our link works) */
     private volatile long lastOwnHeartbeatEcho;
+
+    /** [6b6t patch 6b6t.3] Receiver of lines on the bot channel (set by the global playerlist), null = ignore */
+    @Nullable private volatile Consumer<String> botChannelListener;
 
     /**
      * TEST ONLY: -Dtab6b6t.testDelayProxyMs=N delays every incoming proxy message by N ms (keeps their order),
@@ -414,6 +418,38 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
                     "[TAB-6b6t] Removed " + e.getValue() + " ghost players of proxy " + shortId(e.getKey()) + " (no heartbeat for "
                             + (now - lastSeen.getOrDefault(e.getKey(), 0L)) / 1000 + " s)", (TabTextColor) null));
         }
+    }
+
+    /**
+     * [6b6t patch 6b6t.3] Sets the receiver of lines on the bot channel ({@code null} = ignore them).
+     *
+     * @param   listener
+     *          receiver (called on the messenger thread)
+     */
+    public void setBotChannelListener(@Nullable Consumer<String> listener) {
+        botChannelListener = listener;
+    }
+
+    /**
+     * [6b6t patch 6b6t.3] Called by the messenger for every line received on the bot channel (any thread).
+     *
+     * @param   line
+     *          received line
+     */
+    public void onBotChannelMessage(@NotNull String line) {
+        Consumer<String> listener = botChannelListener;
+        if (listener != null) listener.accept(line);
+    }
+
+    /**
+     * [6b6t patch 6b6t.3] Sends a line on the bot channel ({@code TAB_4_TAB-6b6t-bots}), which unpatched TAB
+     * and 6.1.0-6b6t.1/.2 are not subscribed to. Default: not supported by this messenger.
+     *
+     * @param   line
+     *          line to send
+     */
+    public void sendBotChannelMessage(@NotNull String line) {
+        // Only ProxyMessengerSupport (Redis / RabbitMQ) supports it
     }
 
     /**

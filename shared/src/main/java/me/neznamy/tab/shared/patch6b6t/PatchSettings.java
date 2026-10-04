@@ -55,6 +55,9 @@ public final class PatchSettings {
     /** Interval of the "[TAB-6b6t]" counter line in the console, 0 = off */
     public final int statsIntervalMinutes;
 
+    /** Hide bots from the global playerlist of viewers with LuckPerms meta botsfilter-hide-tab=true (6b6t.3) */
+    public final boolean botTabFilter;
+
     private PatchSettings(@NotNull Properties p, @NotNull List<String> warnings) {
         staleGuard = bool(p, "stale-guard", true, warnings);
         tombstoneTtlMillis = 1000L * integer(p, "tombstone-ttl-seconds", 120, 5, 3600, warnings);
@@ -66,6 +69,7 @@ public final class PatchSettings {
         logRotation = bool(p, "log-rotation", true, warnings);
         rotationKeep = integer(p, "rotation-keep", 3, 1, 50, warnings);
         statsIntervalMinutes = integer(p, "stats-interval-minutes", 5, 0, 1440, warnings);
+        botTabFilter = bool(p, "bot-tab-filter", true, warnings);
     }
 
     /**

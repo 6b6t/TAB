@@ -62,6 +62,10 @@ public class ProxyMessengerSupport extends ProxySupport {
             messenger.subscribe(getHeartbeatChannelName()).consume((channel, lines) -> {
                 if (lines.length > 0 && lines[0] != null) onHeartbeat(lines[0]);
             });
+            // [6b6t patch 6b6t.3] Bot flags of each proxy's players, also on a separate channel (see RemoteBots)
+            messenger.subscribe(getBotChannelName()).consume((channel, lines) -> {
+                if (lines.length > 0 && lines[0] != null) onBotChannelMessage(lines[0]);
+            });
             messenger.start();
             TAB.getInstance().getPlatform().logInfo(new TabTextComponent("Successfully connected to " + messengerName, TabTextColor.GREEN));
         } catch (Exception e) {
@@ -77,6 +81,27 @@ public class ProxyMessengerSupport extends ProxySupport {
     @NotNull
     public String getHeartbeatChannelName() {
         return getChannelName() + "-6b6t";
+    }
+
+    /**
+     * [6b6t patch 6b6t.3] Name of the bot channel.
+     *
+     * @return  bot channel name
+     */
+    @NotNull
+    public String getBotChannelName() {
+        return getChannelName() + "-6b6t-bots";
+    }
+
+    @Override
+    public void sendBotChannelMessage(@NotNull String line) {
+        if (messenger == null || !messenger.isEnabled()) return;
+        try {
+            messenger.send(getBotChannelName(), line);
+        } catch (Exception e) {
+            // The periodic full list repairs anything lost
+            TAB.getInstance().debug("[TAB-6b6t] Failed to send bot flags: " + e);
+        }
     }
 
     @Override
