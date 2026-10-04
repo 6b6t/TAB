@@ -64,7 +64,13 @@ public class ProxyMessengerSupport extends ProxySupport {
             });
             // [6b6t patch 6b6t.3] Bot flags of each proxy's players, also on a separate channel (see RemoteBots)
             messenger.subscribe(getBotChannelName()).consume((channel, lines) -> {
-                if (lines.length > 0 && lines[0] != null) onBotChannelMessage(lines[0]);
+                // Never let a bot-channel problem (e.g. a message arriving during reload/disable) escape into the
+                // messenger thread that also carries the main sync channel.
+                try {
+                    if (lines.length > 0 && lines[0] != null) onBotChannelMessage(lines[0]);
+                } catch (Exception ignored) {
+                    // dropped; the next full bot list (every 30 s) restores the state
+                }
             });
             messenger.start();
             TAB.getInstance().getPlatform().logInfo(new TabTextComponent("Successfully connected to " + messengerName, TabTextColor.GREEN));
