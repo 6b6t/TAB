@@ -56,10 +56,68 @@ public class ProxyMessengerSupport extends ProxySupport {
                 }
             };
             messenger.subscribe(getChannelName()).consume((channel, lines) -> processMessage(lines[0])).cache(true);
+            // [6b6t patch] Heartbeat on a SEPARATE channel: an unpatched TAB is not subscribed to it and never sees it
+            // (an unknown action on the main channel would be logged as an error there). No cache, so our own
+            // heartbeat comes back to us and proves our Redis link works.
+            messenger.subscribe(getHeartbeatChannelName()).consume((channel, lines) -> {
+                if (lines.length > 0 && lines[0] != null) onHeartbeat(lines[0]);
+            });
+            // [6b6t patch 6b6t.3] Bot flags of each proxy's players, also on a separate channel (see RemoteBots)
+            messenger.subscribe(getBotChannelName()).consume((channel, lines) -> {
+                // Never let a bot-channel problem (e.g. a message arriving during reload/disable) escape into the
+                // messenger thread that also carries the main sync channel.
+                try {
+                    if (lines.length > 0 && lines[0] != null) onBotChannelMessage(lines[0]);
+                } catch (Exception ignored) {
+                    // dropped; the next full bot list (every 30 s) restores the state
+                }
+            });
             messenger.start();
             TAB.getInstance().getPlatform().logInfo(new TabTextComponent("Successfully connected to " + messengerName, TabTextColor.GREEN));
         } catch (Exception e) {
             TAB.getInstance().getErrorManager().criticalError("Failed to connect to " + messengerName + ": " + e.getClass().getName() + ": " + e.getMessage(), null);
+        }
+    }
+
+    /**
+     * [6b6t patch] Name of the heartbeat channel.
+     *
+     * @return  heartbeat channel name
+     */
+    @NotNull
+    public String getHeartbeatChannelName() {
+        return getChannelName() + "-6b6t";
+    }
+
+    /**
+     * [6b6t patch 6b6t.3] Name of the bot channel.
+     *
+     * @return  bot channel name
+     */
+    @NotNull
+    public String getBotChannelName() {
+        return getChannelName() + "-6b6t-bots";
+    }
+
+    @Override
+    public void sendBotChannelMessage(@NotNull String line) {
+        if (messenger == null || !messenger.isEnabled()) return;
+        try {
+            messenger.send(getBotChannelName(), line);
+        } catch (Exception e) {
+            // The periodic full list repairs anything lost
+            TAB.getInstance().debug("[TAB-6b6t] Failed to send bot flags: " + e);
+        }
+    }
+
+    @Override
+    protected void sendHeartbeat() {
+        if (messenger == null || !messenger.isEnabled()) return;
+        try {
+            messenger.send(getHeartbeatChannelName(), getProxy().toString());
+        } catch (Exception e) {
+            // Ghost removal is skipped while our own heartbeat does not come back, nothing else to do
+            TAB.getInstance().debug("[TAB-6b6t] Failed to send heartbeat: " + e);
         }
     }
 

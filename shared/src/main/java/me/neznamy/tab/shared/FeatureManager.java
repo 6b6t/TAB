@@ -200,6 +200,11 @@ public class FeatureManager {
     public void onJoin(@NotNull TabPlayer connectedPlayer) {
         long millis = System.currentTimeMillis();
         TAB.getInstance().addPlayer(connectedPlayer);
+        connectedPlayer.lastTeamStateChange = millis; // [6b6t patch] team audit grace
+        // [6b6t patch] Fix 2: drop a stale copy of this player from another proxy BEFORE any feature runs, so
+        // Sorting gives him his normal team name and the copy's late messages cannot touch his team.
+        ProxySupport proxySupport = getFeature(TabConstants.Feature.PROXY_SUPPORT);
+        if (proxySupport != null) proxySupport.retireRemoteCopy(connectedPlayer);
         for (TabFeature f : values) {
             if (!(f instanceof JoinListener)) continue;
             TimedCaughtTask task = new TimedCaughtTask(TAB.getInstance().getCpu(), () -> ((JoinListener) f).onJoin(connectedPlayer), f.getFeatureName(), CpuUsageCategory.PLAYER_JOIN);
@@ -256,6 +261,7 @@ public class FeatureManager {
         if (changed == null) return;
         Server from = changed.server;
         changed.server = to;
+        changed.lastTeamStateChange = System.currentTimeMillis(); // [6b6t patch] team audit grace
         ((ProxyTabPlayer)changed).sendJoinPluginMessage();
         ((TrackedTabList<?>)changed.getTabList()).resendHeaderFooter();
         for (TabFeature f : values) {
@@ -402,6 +408,7 @@ public class FeatureManager {
         TAB.getInstance().getCpu().getProcessingThread().executeLater(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> {
             if (connectedPlayer.getConnectionState() == ProxyPlayer.ConnectionState.DISCONNECTED) return; // Player immediately disconnected in the meantime
             connectedPlayer.setConnectionState(ProxyPlayer.ConnectionState.CONNECTED);
+            connectedPlayer.setLastChangeMillis(System.currentTimeMillis()); // [6b6t patch] team audit grace
             for (TabFeature f : values) {
                 if (!(f instanceof ProxyFeature)) continue;
                 TimedCaughtTask task = new TimedCaughtTask(TAB.getInstance().getCpu(),
@@ -445,6 +452,7 @@ public class FeatureManager {
      */
     public void onQuit(@NotNull ProxyPlayer disconnectedPlayer) {
         disconnectedPlayer.setConnectionState(ProxyPlayer.ConnectionState.DISCONNECTED);
+        disconnectedPlayer.setLastChangeMillis(System.currentTimeMillis()); // [6b6t patch] audit leaves the queued quit alone
         for (TabFeature f : values) {
             if (!(f instanceof ProxyFeature)) continue;
             TimedCaughtTask task = new TimedCaughtTask(TAB.getInstance().getCpu(),

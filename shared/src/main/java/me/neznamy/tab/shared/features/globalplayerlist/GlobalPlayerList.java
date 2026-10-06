@@ -13,6 +13,10 @@ import me.neznamy.tab.shared.features.playerlist.PlayerList;
 import me.neznamy.tab.shared.features.proxy.ProxyPlayer;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.types.*;
+import me.neznamy.tab.shared.hook.LuckPermsHook;
+import me.neznamy.tab.shared.patch6b6t.BotTabFilter;
+import me.neznamy.tab.shared.patch6b6t.PatchSettings;
+import me.neznamy.tab.shared.patch6b6t.RemoteBots;
 import me.neznamy.tab.shared.platform.TabList;
 import me.neznamy.tab.api.integration.VanishIntegration;
 import me.neznamy.tab.shared.platform.TabPlayer;
@@ -35,6 +39,13 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
     @Nullable private final ProxySupport proxy = TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PROXY_SUPPORT);
     @NotNull private final GlobalPlayerListConfiguration configuration;
     @Nullable private final PlayerList playerlist = TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PLAYER_LIST);
+
+    /** [6b6t patch 6b6t.3] Hides bots for viewers who chose so (LuckPerms meta botsfilter-hide-tab) */
+    @Getter @NotNull private final BotTabFilter botFilter = new BotTabFilter(PatchSettings.get().botTabFilter,
+            PatchSettings.get().botTabFilter ? BotTabFilter.luckPermsReader(LuckPermsHook.getInstance().isInstalled()) : null);
+
+    /** [6b6t patch 6b6t.3] Ticks of the 10 s bot flag task, every 3rd also sends our bot list */
+    private int botTicks;
 
     /**
      * Constructs new instance and registers new placeholders.
@@ -65,6 +76,9 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
     public void load() {
         onlinePlayers =  new OnlinePlayers(TAB.getInstance().getOnlinePlayers());
         if (configuration.isUpdateLatency()) addUsedPlaceholder(TabConstants.Placeholder.PING);
+        // [6b6t patch 6b6t.3] flags first, so the entries below already respect them
+        for (TabPlayer p : onlinePlayers.getPlayers()) botFilter.refresh(p.botFlags, p.getUniqueId());
+        startBotFilter();
         for (TabPlayer viewer : onlinePlayers.getPlayers()) {
             for (TabPlayer displayed : onlinePlayers.getPlayers()) {
                 if (viewer.server == displayed.server) continue;
@@ -85,11 +99,14 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
      * @return  {@code true} if viewer should see the target, {@code false} if not
      */
     public boolean shouldSee(@NotNull TabPlayer viewer, @NotNull TabPlayer displayed) {
+        // [6b6t patch 6b6t.3] bots hidden for viewers who chose so (viewer flag first: one volatile read for everyone else)
+        if (viewer.botFlags.hidesBots() && botFilter.hides(true, viewer.server != displayed.server, displayed.botFlags.isBot())) return false;
         return viewer.server.canSee(displayed.server) && viewer.canSee(displayed);
     }
 
     @Override
     public void unload() {
+        stopBotFilter(); // [6b6t patch 6b6t.3]
         for (TabPlayer displayed : onlinePlayers.getPlayers()) {
             for (TabPlayer viewer : onlinePlayers.getPlayers()) {
                 if (displayed.server != viewer.server) viewer.getTabList().removeEntry(displayed.getTablistId());
@@ -99,6 +116,11 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
 
     @Override
     public void onJoin(@NotNull TabPlayer connectedPlayer) {
+        // [6b6t patch 6b6t.3] read the flags before any entry is sent and tell the other proxy (it shows his copy
+        // 200 ms after the join message, so this normally arrives first). "-" for a non-bot only clears a stale
+        // flag of an earlier session (no change and no packet on the other side otherwise).
+        botFilter.refresh(connectedPlayer.botFlags, connectedPlayer.getUniqueId());
+        if (botFilter.isEnabled()) sendBotDelta(connectedPlayer, connectedPlayer.botFlags.isBot());
         onlinePlayers.addPlayer(connectedPlayer);
         for (TabPlayer all : onlinePlayers.getPlayers()) {
             if (connectedPlayer.server == all.server) continue;
@@ -238,6 +260,8 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
     private boolean shouldSee(@NotNull TabPlayer viewer, @NotNull ProxyPlayer target) {
         // Do not show duplicate player that will be removed in a sec
         if (TAB.getInstance().isPlayerConnected(target.getTablistId())) return false;
+        // [6b6t patch 6b6t.3] bots of the other proxy hidden for viewers who chose so
+        if (viewer.botFlags.hidesBots() && botFilter.hides(true, viewer.server != target.server, botFilter.getRemote().isBot(target.getUniqueId()))) return false;
         return viewer.server.canSee(target.server) && (!target.isVanished() || viewer.hasPermission(TabConstants.Permission.SEE_VANISHED));
     }
 
@@ -300,6 +324,172 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         return "Global PlayerList";
     }
 
+    // ------------------
+    // [6b6t patch 6b6t.3] bot tab filter
+    // ------------------
+
+    /**
+     * Starts LuckPerms change events, the bot channel and the 10 s task (refresh flags, expire remote bots,
+     * every 30 s send our bot list). Everything that changes entries runs on this feature's thread.
+     */
+    private void startBotFilter() {
+        if (!botFilter.isEnabled()) return;
+        BotTabFilter.MetaReader reader = botFilter.getReader();
+        if (reader != null) {
+            try {
+                reader.subscribe(id -> {
+                    TabPlayer player = TAB.getInstance().getPlayer(id);
+                    if (player == null) return;
+                    customThread.execute(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> refreshBotFlags(player),
+                            getFeatureName(), "6b6t bot flags"));
+                });
+            } catch (Throwable t) {
+                TAB.getInstance().getErrorManager().printError("[TAB-6b6t] Could not subscribe to LuckPerms events, bot flags refresh every 10 s only", t);
+            }
+        }
+        if (proxy != null) {
+            proxy.setBotChannelListener(this::onBotChannelLine);
+            proxy.sendBotChannelMessage(RemoteBots.encodeRequest(proxy.getProxy().toString()));
+            sendBotSnapshot();
+        }
+        customThread.repeatTask(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> {
+            for (TabPlayer p : onlinePlayers.getPlayers()) refreshBotFlags(p);
+            for (UUID id : botFilter.getRemote().expire(System.currentTimeMillis())) reevaluateRemoteBot(id);
+            if (++botTicks % 3 == 0) sendBotSnapshot();
+        }, getFeatureName(), "6b6t bot flags"), 10_000);
+    }
+
+    /**
+     * Stops LuckPerms change events and the bot channel listener.
+     */
+    private void stopBotFilter() {
+        BotTabFilter.MetaReader reader = botFilter.getReader();
+        if (reader != null) {
+            try {
+                reader.unsubscribe();
+            } catch (Throwable ignored) {
+                // LuckPerms already disabled
+            }
+        }
+        if (proxy != null) proxy.setBotChannelListener(null);
+    }
+
+    /**
+     * Re-reads a local player's flags and updates entries if they changed. Runs on this feature's thread.
+     *
+     * @param   player
+     *          local player
+     */
+    private void refreshBotFlags(@NotNull TabPlayer player) {
+        if (!player.isOnline() || !onlinePlayers.contains(player)) return; // not joined yet (onJoin reads the flags) or gone
+        int changed = botFilter.refresh(player.botFlags, player.getUniqueId());
+        if ((changed & me.neznamy.tab.shared.patch6b6t.BotFlags.BOT_CHANGED) != 0) {
+            sendBotDelta(player, player.botFlags.isBot());
+            reevaluateBotTarget(player);
+        }
+        if ((changed & me.neznamy.tab.shared.patch6b6t.BotFlags.HIDE_CHANGED) != 0) {
+            reevaluateBotViewer(player);
+        }
+    }
+
+    /**
+     * A viewer turned bot hiding on or off: remove or re-add the entries of bots on other servers / the other proxy.
+     *
+     * @param   viewer
+     *          viewer whose choice changed
+     */
+    private void reevaluateBotViewer(@NotNull TabPlayer viewer) {
+        boolean hides = viewer.botFlags.hidesBots();
+        for (TabPlayer target : onlinePlayers.getPlayers()) {
+            if (target == viewer || target.server == viewer.server || !target.botFlags.isBot()) continue;
+            apply(viewer, target, botFilter.afterChange(hides, true, shouldSee(viewer, target)));
+        }
+        if (proxy == null) return;
+        for (ProxyPlayer target : proxy.getProxyPlayers().values()) {
+            if (target.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED || target.server == viewer.server) continue;
+            if (TAB.getInstance().isPlayerConnected(target.getTablistId())) continue; // local twin, handled above
+            if (!botFilter.getRemote().isBot(target.getUniqueId())) continue;
+            apply(viewer, target, botFilter.afterChange(hides, true, shouldSee(viewer, target)));
+        }
+    }
+
+    /**
+     * A local player's bot marker changed: update his entry for viewers who hide bots.
+     *
+     * @param   target
+     *          local player
+     */
+    private void reevaluateBotTarget(@NotNull TabPlayer target) {
+        boolean bot = target.botFlags.isBot();
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            if (viewer == target || viewer.server == target.server || !viewer.botFlags.hidesBots()) continue;
+            apply(viewer, target, botFilter.afterChange(true, bot, shouldSee(viewer, target)));
+        }
+    }
+
+    /**
+     * The bot marker of a player on the other proxy changed: update his entry for viewers who hide bots.
+     *
+     * @param   id
+     *          player UUID
+     */
+    private void reevaluateRemoteBot(@NotNull UUID id) {
+        if (proxy == null) return;
+        ProxyPlayer target = proxy.getProxyPlayers().get(id);
+        if (target == null || target.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED) return; // join adds it later
+        if (TAB.getInstance().isPlayerConnected(target.getTablistId())) return; // local twin uses local flags
+        boolean bot = botFilter.getRemote().isBot(id);
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            if (viewer.server == target.server || !viewer.botFlags.hidesBots()) continue;
+            BotTabFilter.Action action = botFilter.afterChange(true, bot, shouldSee(viewer, target));
+            if (action == BotTabFilter.Action.REMOVE) viewer.getTabList().removeEntry(target.getTablistId());
+            else if (action == BotTabFilter.Action.ADD) viewer.getTabList().addEntry(target.asEntry());
+        }
+    }
+
+    private void apply(@NotNull TabPlayer viewer, @NotNull TabPlayer target, @NotNull BotTabFilter.Action action) {
+        if (action == BotTabFilter.Action.REMOVE) viewer.getTabList().removeEntry(target.getTablistId());
+        else if (action == BotTabFilter.Action.ADD) viewer.getTabList().addEntry(getAddInfoData(target, viewer));
+    }
+
+    private void apply(@NotNull TabPlayer viewer, @NotNull ProxyPlayer target, @NotNull BotTabFilter.Action action) {
+        if (action == BotTabFilter.Action.REMOVE) viewer.getTabList().removeEntry(target.getTablistId());
+        else if (action == BotTabFilter.Action.ADD) viewer.getTabList().addEntry(target.asEntry());
+    }
+
+    /**
+     * Line received on the bot channel (messenger thread): update the registry, re-check changed players
+     * on this feature's thread, answer a list request.
+     *
+     * @param   line
+     *          received line
+     */
+    private void onBotChannelLine(@NotNull String line) {
+        if (proxy == null) return;
+        RemoteBots.Result result = botFilter.getRemote().handle(line, proxy.getProxy().toString(), System.currentTimeMillis());
+        if (result.changed.isEmpty() && !result.snapshotRequested) return;
+        customThread.execute(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> {
+            for (UUID id : result.changed) reevaluateRemoteBot(id);
+            if (result.snapshotRequested) sendBotSnapshot();
+        }, getFeatureName(), "6b6t bot flags"));
+    }
+
+    private void sendBotDelta(@NotNull TabPlayer player, boolean bot) {
+        if (proxy == null) return;
+        proxy.sendBotChannelMessage(RemoteBots.encodeDelta(proxy.getProxy().toString(), player.getUniqueId(), bot));
+    }
+
+    private void sendBotSnapshot() {
+        if (proxy == null) return;
+        List<UUID> bots = new ArrayList<>();
+        for (TabPlayer p : onlinePlayers.getPlayers()) {
+            if (p.botFlags.isBot()) bots.add(p.getUniqueId());
+        }
+        for (String line : RemoteBots.encodeSnapshot(proxy.getProxy().toString(), bots)) {
+            proxy.sendBotChannelMessage(line);
+        }
+    }
+
     /**
      * Checks if a server name matches any of the given patterns. Supports:
      * - Exact match: "lobby"
@@ -329,6 +519,9 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         playerInfo.put("server", player.server.getName());
         playerInfo.put("server is spy server", player.server.isSpyServer());
         playerInfo.put("server group", player.server.getServerGroup().getName());
+        playerInfo.put("6b6t bot", player.botFlags.isBot()); // [6b6t patch 6b6t.3]
+        playerInfo.put("6b6t hides bots", player.botFlags.hidesBots());
+        playerInfo.put("6b6t bots on other proxies", botFilter.getRemote().size());
         playerInfo.put("servers in the group", player.server.getServerGroup().getPatterns());
 
         List<List<String>> rows = new ArrayList<>();
@@ -395,6 +588,9 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         if (target.isVanished() && !viewer.hasPermission(TabConstants.Permission.SEE_VANISHED)) {
             return "no - target is vanished and viewer lacks permission (" + TabConstants.Permission.SEE_VANISHED + ")";
         }
+        if (viewer.botFlags.hidesBots() && botFilter.hides(true, viewer.server != target.server, target.botFlags.isBot())) {
+            return "no - target is a bot (" + BotTabFilter.BOT_META + ") and viewer hides bots (" + BotTabFilter.HIDE_META + ")";
+        }
 
         if (viewer.server == target.server) {
             return "yes - same server (" + viewer.server.getName() + ")";
@@ -430,6 +626,9 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         }
         if (target.isVanished() && !viewer.hasPermission(TabConstants.Permission.SEE_VANISHED)) {
             return "no - target is vanished and viewer lacks permission (" + TabConstants.Permission.SEE_VANISHED + ")";
+        }
+        if (viewer.botFlags.hidesBots() && botFilter.hides(true, viewer.server != target.server, botFilter.getRemote().isBot(target.getUniqueId()))) {
+            return "no - target is a bot on another proxy and viewer hides bots (" + BotTabFilter.HIDE_META + ")";
         }
 
         if (viewer.server == target.server) {

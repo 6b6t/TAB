@@ -107,6 +107,12 @@ public abstract class TabPlayer implements me.neznamy.tab.api.TabPlayer {
     /** Data for scoreboard team */
     public final NameTagPlayerData teamData = new NameTagPlayerData(this);
 
+    /** [6b6t patch] Time of the last join / server switch, the team audit leaves fresh players alone */
+    public volatile long lastTeamStateChange = System.currentTimeMillis();
+
+    /** [6b6t patch] Cached LuckPerms bot marker / hide-bots choice for the bot tab filter */
+    public final me.neznamy.tab.shared.patch6b6t.BotFlags botFlags = new me.neznamy.tab.shared.patch6b6t.BotFlags();
+
     /** Data for Layout */
     public final LayoutManagerImpl.PlayerData layoutData = new LayoutManagerImpl.PlayerData();
 
