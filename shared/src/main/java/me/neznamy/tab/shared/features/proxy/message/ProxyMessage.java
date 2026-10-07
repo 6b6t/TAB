@@ -14,6 +14,14 @@ import java.util.UUID;
 
 public abstract class ProxyMessage {
 
+    /** Optional trailing origin sequence; .3 decoders ignore it and .3 senders omit it. */
+    private long sequence = -1;
+    public long getSequence() { return sequence; }
+    public void setSequence(long value) { sequence = value; }
+    public void readSequence(ByteArrayDataInput in) {
+        try { sequence = in.readLong(); } catch (IllegalStateException legacyEnd) { sequence = -1; }
+    }
+
     /**
      * [6b6t patch] Id of the proxy that sent this message, taken from the message header.
      * Not part of the wire format (set by the receiver), so the format stays compatible with unpatched TAB.

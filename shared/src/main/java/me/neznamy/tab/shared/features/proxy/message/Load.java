@@ -20,6 +20,10 @@ import java.util.stream.Collectors;
 public class Load extends ProxyMessage {
 
     @NotNull private final List<PlayerJoin> decodedPlayers;
+    private long requestId = -1, snapshot = -1;
+    private int chunkIndex, chunkCount;
+    public void setSnapshot(long request, long sequence) { requestId = request; snapshot = sequence; setSequence(sequence); }
+
 
     /**
      * Creates new instance from given players.
@@ -53,14 +57,18 @@ public class Load extends ProxyMessage {
      */
     @NotNull
     public static List<Load> split(@NotNull TabPlayer[] players) {
+        return splitPlayers(Arrays.stream(players).map(PlayerJoin::new).collect(Collectors.toList()));
+    }
+
+    public static List<Load> splitPlayers(List<PlayerJoin> players) {
         List<Load> loads = new ArrayList<>();
         List<PlayerJoin> part = new ArrayList<>();
         int size = 0;
-        for (TabPlayer player : players) {
-            PlayerJoin join = new PlayerJoin(player);
+        for (PlayerJoin join : players) {
             ByteArrayDataOutput out = ByteStreams.newDataOutput();
             join.write(out);
             int bytes = out.toByteArray().length;
+            if (bytes > MAX_PLAYER_BYTES) throw new IllegalArgumentException("PlayerJoin exceeds safe Load size: " + bytes);
             if (!part.isEmpty() && size + bytes > MAX_PLAYER_BYTES) {
                 loads.add(new Load(part));
                 part = new ArrayList<>();
@@ -70,6 +78,7 @@ public class Load extends ProxyMessage {
             size += bytes;
         }
         if (!part.isEmpty() || loads.isEmpty()) loads.add(new Load(part));
+        for (int i = 0; i < loads.size(); i++) { loads.get(i).chunkIndex = i; loads.get(i).chunkCount = loads.size(); }
         return loads;
     }
 
@@ -85,6 +94,9 @@ public class Load extends ProxyMessage {
         for (int i = 0; i < count; i++) {
             decodedPlayers.add(new PlayerJoin(in));
         }
+        try {
+            requestId = in.readLong(); snapshot = in.readLong(); chunkIndex = in.readInt(); chunkCount = in.readInt();
+        } catch (IllegalStateException legacyEnd) { requestId = -1; snapshot = -1; chunkCount = 0; }
     }
 
     @Override
@@ -93,17 +105,21 @@ public class Load extends ProxyMessage {
         for (PlayerJoin player : decodedPlayers) {
             player.write(out);
         }
+        out.writeLong(requestId); out.writeLong(snapshot); out.writeInt(chunkIndex); out.writeInt(chunkCount);
     }
 
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
+        java.util.Set<java.util.UUID> members = new java.util.HashSet<>();
         for (PlayerJoin join : decodedPlayers) {
+            members.add(join.getSubjectId());
+            join.setSequence(snapshot);
             // [6b6t patch] every player in the list goes through the stale message guard like a single join
             join.setSourceProxy(getSourceProxy());
             if (proxySupport.acceptMessage(join)) {
-                proxySupport.noteLoaded(getSourceProxy(), join.getSubjectId()); // [6b6t patch 6b6t.4] see checkDigest
                 join.process(proxySupport);
             }
         }
+        proxySupport.noteLoaded(getSourceProxy(), requestId, snapshot, chunkIndex, chunkCount, members);
     }
 }

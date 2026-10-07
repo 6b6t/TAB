@@ -95,12 +95,18 @@ public class PlayerJoin extends ProxyMessage {
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer decodedPlayer = new ProxyPlayer(uniqueId, tablistId, name, server, vanished, staff, skin);
+        decodedPlayer.setStateSequence(getSequence());
         decodedPlayer.setSourceProxy(getSourceProxy()); // [6b6t patch] remember which proxy owns this copy
         ProxyPlayer existing = proxySupport.getProxyPlayers().get(uniqueId);
         if (existing != null) {
             // [6b6t patch 6b6t.4] A join of a copy we already have comes from a Load (answer to "send me your players").
-            // From the copy's own proxy it is the current state: apply it, so a lost server switch / vanish update heals.
-            if (Objects.equals(existing.getSourceProxy(), getSourceProxy())) refresh(existing, proxySupport);
+            // Only a sequenced snapshot at least as new as the last state update can refresh it.
+            // Legacy Loads have no ordering barrier and retain .3's add-only behavior.
+            if (Objects.equals(existing.getSourceProxy(), getSourceProxy())
+                    && getSequence() >= 0 && getSequence() >= existing.getStateSequence()) {
+                refresh(existing, proxySupport);
+                existing.setStateSequence(getSequence());
+            }
             TAB.getInstance().debug("[Proxy Support] The proxy player " + decodedPlayer.getName() + " is already connected, cannot process join.");
             return;
         }
@@ -108,13 +114,14 @@ public class PlayerJoin extends ProxyMessage {
         QueuedData data = proxySupport.getQueuedData().remove(decodedPlayer.getUniqueId());
         // [6b6t patch] only take data queued by the same proxy (data of another proxy belongs to another session)
         if (data != null && (data.getSourceProxy() == null || data.getSourceProxy().equals(getSourceProxy()))) {
-            if (data.getServer() != null) decodedPlayer.setServer(data.getServer()); // [6b6t patch 6b6t.4] switch that overtook the join
+            decodedPlayer.setStateSequence(Math.max(getSequence(), Math.max(data.getServerSequence(), data.getVanishSequence())));
+            if ((getSequence() < 0 || data.getServerSequence() >= getSequence()) && data.getServer() != null) decodedPlayer.setServer(data.getServer()); // [6b6t patch 6b6t.4] switch that overtook the join
             decodedPlayer.setBelowname(data.getBelowname());
             decodedPlayer.setTabFormat(data.getTabFormat());
             decodedPlayer.setNametag(data.getNametag());
             decodedPlayer.setPlayerlist(data.getPlayerlist());
             // [6b6t patch] upstream applied the default "false" even when no vanish update was queued
-            if (data.isVanishedSet()) decodedPlayer.setVanished(data.isVanished());
+            if ((getSequence() < 0 || data.getVanishSequence() >= getSequence()) && data.isVanishedSet()) decodedPlayer.setVanished(data.isVanished());
         }
         if (TAB.getInstance().getPlayer(decodedPlayer.getUniqueId()) == null) {
             TAB.getInstance().getFeatureManager().onJoin(decodedPlayer);

@@ -18,6 +18,9 @@ import org.jetbrains.annotations.Nullable;
 @Setter
 public class QueuedData {
 
+    private long serverSequence = -1;
+    private long vanishSequence = -1;
+
     /** Belowname data */
     @Nullable
     private BelowNameProxyPlayerData belowname;
