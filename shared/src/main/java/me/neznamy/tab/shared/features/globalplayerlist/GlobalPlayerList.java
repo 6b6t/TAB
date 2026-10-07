@@ -260,8 +260,9 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
     private boolean shouldSee(@NotNull TabPlayer viewer, @NotNull ProxyPlayer target) {
         // Do not show duplicate player that will be removed in a sec
         if (TAB.getInstance().isPlayerConnected(target.getTablistId())) return false;
-        // [6b6t patch 6b6t.3] bots of the other proxy hidden for viewers who chose so
-        if (viewer.botFlags.hidesBots() && botFilter.hides(true, viewer.server != target.server, botFilter.getRemote().isBot(target.getUniqueId()))) return false;
+        // [6b6t patch 6b6t.5] Every entry TAB adds for a remote copy must respect hiding, including
+        // same-server self-repair: adding that entry would override the backend's unlisted bot.
+        if (viewer.botFlags.hidesBots() && botFilter.hides(true, true, botFilter.getRemote().isBot(target.getUniqueId()))) return false;
         return viewer.server.canSee(target.server) && (!target.isVanished() || viewer.hasPermission(TabConstants.Permission.SEE_VANISHED));
     }
 
