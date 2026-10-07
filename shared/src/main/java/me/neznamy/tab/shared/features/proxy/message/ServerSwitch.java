@@ -49,7 +49,10 @@ public class ServerSwitch extends ProxyMessage {
 
     @Override
     public void queue(@NotNull ProxySupport proxySupport) {
-        proxySupport.queuedFor(playerId, getSourceProxy()).setServer(newServer);
+        me.neznamy.tab.shared.features.proxy.QueuedData data = proxySupport.queuedFor(playerId, getSourceProxy());
+        if (getSequence() >= 0 && getSequence() < data.getServerSequence()) return;
+        data.setServer(newServer);
+        data.setServerSequence(getSequence() < 0 ? Long.MAX_VALUE : getSequence());
     }
 
     @Override
@@ -60,6 +63,7 @@ public class ServerSwitch extends ProxyMessage {
             queue(proxySupport);
             return;
         }
+        target.setStateSequence(getSequence() < 0 ? Long.MAX_VALUE : Math.max(target.getStateSequence(), getSequence()));
         target.setServer(newServer);
         target.setLastChangeMillis(System.currentTimeMillis()); // [6b6t patch] team audit grace
         TAB.getInstance().getFeatureManager().onServerSwitch(target);

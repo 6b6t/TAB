@@ -146,7 +146,9 @@ public class PlayerList extends RefreshableFeature implements TabListFormatManag
     }
 
     /** [6b6t patch 6b6t.4] Next viewer of the format audit */
-    private int auditCursor;
+    private final AuditCursor auditCursor = new AuditCursor();
+    private TabPlayer[] auditPlayers;
+    private ProxyPlayer[] auditCopies;
 
     /**
      * [6b6t patch 6b6t.4] Self-repair of display names, the counterpart of TeamAudit: every second, at most
@@ -157,35 +159,47 @@ public class PlayerList extends RefreshableFeature implements TabListFormatManag
     private void auditFormats() {
         PatchSettings settings = PatchSettings.get();
         if (!settings.auditEnabled) return;
-        TabPlayer[] players = TAB.getInstance().getOnlinePlayers();
-        long start = System.nanoTime();
+        if (auditPlayers == null) {
+            auditPlayers = TAB.getInstance().getOnlinePlayers();
+            auditCopies = proxy == null ? new ProxyPlayer[0] : proxy.getProxyPlayers().values().toArray(new ProxyPlayer[0]);
+        }
+        TabPlayer[] players = auditPlayers;
+        AuditBudget budget = new AuditBudget(settings.auditSliceNanos, 32, System::nanoTime);
         long now = System.currentTimeMillis();
-        for (int checked = 0; checked < players.length && System.nanoTime() - start < settings.auditSliceNanos; checked++) {
-            if (auditCursor >= players.length) auditCursor = 0;
-            TabPlayer viewer = players[auditCursor++];
-            if (!viewer.isLoaded() || now - viewer.lastTeamStateChange < settings.auditGraceMillis
-                    || viewer.layoutData.currentLayout != null || !(viewer.getTabList() instanceof TrackedTabList)) continue;
+        while (auditCursor.viewer() < players.length && budget.canCheck()) {
+            TabPlayer viewer = players[auditCursor.viewer()];
+            if (TAB.getInstance().getPlayer(viewer.getUniqueId()) != viewer || !viewer.isLoaded() || now - viewer.lastTeamStateChange < settings.auditGraceMillis
+                    || viewer.layoutData.currentLayout != null || !(viewer.getTabList() instanceof TrackedTabList)) { auditCursor.nextViewer(); continue; }
             TrackedTabList<?> list = (TrackedTabList<?>) viewer.getTabList();
-            for (TabPlayer target : players) {
-                if (!target.isLoaded() || target.tablistData.disabled.get() || now - target.lastTeamStateChange < settings.auditGraceMillis
+            while (auditCursor.target() < players.length) {
+                if (!budget.canCheck()) return;
+                TabPlayer target = players[auditCursor.target()];
+                auditCursor.nextTarget();
+                if (TAB.getInstance().getPlayer(target.getUniqueId()) != target || !target.isLoaded() || target.tablistData.disabled.get() || now - target.lastTeamStateChange < settings.auditGraceMillis
                         || list.getForcedDisplayNames().get(target.getTablistId()) != null || !list.containsEntry(target.getTablistId())) continue;
                 TabComponent format = getTabFormat(target, viewer);
                 if (format == null) continue;
                 updateDisplayName(viewer, target, format);
                 PatchStats.auditRepaired.incrementAndGet();
+                budget.repaired();
             }
-            if (proxy == null) continue;
-            for (ProxyPlayer target : proxy.getProxyPlayers().values()) {
+            while (auditCursor.target() < players.length + auditCopies.length) {
+                if (!budget.canCheck()) return;
+                ProxyPlayer target = auditCopies[auditCursor.target() - players.length];
+                auditCursor.nextTarget();
                 PlayerListProxyPlayerData data = target.getTabFormat();
-                if (data == null || data.isDisabled() || target.isVanished() || target.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED
+                if (proxy.getProxyPlayers().get(target.getUniqueId()) != target || data == null || data.isDisabled() || target.isVanished() || target.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED
                         || now - target.getLastChangeMillis() < settings.auditGraceMillis || TAB.getInstance().getPlayer(target.getUniqueId()) != null) continue;
                 TabComponent have = list.getForcedDisplayNames().get(target.getTablistId());
                 TabComponent want = data.getFormatComponent();
                 if (have == want || (have != null && have.toLegacyText().equals(want.toLegacyText())) || !list.containsEntry(target.getTablistId())) continue;
                 list.updateDisplayName(target.getTablistId(), want);
                 PatchStats.auditRepaired.incrementAndGet();
+                budget.repaired();
             }
+            auditCursor.nextViewer();
         }
+        if (auditCursor.viewer() >= players.length) { auditCursor.reset(); auditPlayers = null; auditCopies = null; }
     }
 
     @Override

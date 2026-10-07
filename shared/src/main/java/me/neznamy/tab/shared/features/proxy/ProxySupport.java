@@ -30,6 +30,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -92,7 +93,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
     @Nullable private volatile Consumer<String> botChannelListener;
 
     /** [6b6t patch 6b6t.4] Highest id of the nametag [0] and tab format [1] data sent for each local player (digest) */
-    @NotNull private final Map<UUID, long[]> sentIds = new ConcurrentHashMap<>();
+    @NotNull private final Map<UUID, AtomicLongArray> sentIds = new ConcurrentHashMap<>();
 
     /** [6b6t patch 6b6t.4] Digest check of each origin proxy (Processing Thread only) */
     @NotNull private final Map<String, DigestCheck> digestChecks = new ConcurrentHashMap<>();
@@ -100,14 +101,18 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
     /** [6b6t patch 6b6t.4] An origin's players are requested again at most this often */
     private static final long RESYNC_INTERVAL_MS = 60_000;
 
-    /** [6b6t patch 6b6t.4] State of the digest check of one origin proxy */
+    /** Origin-local ordering barrier captured before serializing a Load snapshot. */
+    private final AtomicLong outgoingSequence = new AtomicLong();
+    public long snapshotSequence() { return outgoingSequence.incrementAndGet(); }
+
+    /** State of the digest check of one origin proxy (Processing Thread). */
     private static class DigestCheck {
         /** Heartbeats in a row whose digest differed from our copies */
         int mismatches;
         /** Time of our last request for its players */
         long requestedAt;
         /** Players received in Loads of this origin since that request, null = no request pending */
-        @Nullable Set<UUID> loaded;
+        @Nullable SnapshotChunks loaded;
     }
 
     /**
@@ -119,7 +124,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
     protected ProxySupport(@NotNull String channelName) {
         this.channelName = channelName;
         registerMessage(Load.class, Load::new);
-        registerMessage(LoadRequest.class, in -> new LoadRequest());
+        registerMessage(LoadRequest.class, LoadRequest::new);
         registerMessage(PlayerJoin.class, PlayerJoin::new);
         registerMessage(PlayerQuit.class, PlayerQuit::new);
         registerMessage(ServerSwitch.class, ServerSwitch::new);
@@ -152,6 +157,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         ProxyMessage proxyMessage;
         try {
             proxyMessage = function.apply(in);
+            proxyMessage.readSequence(in);
             TAB.getInstance().debug("[Proxy Support] Decoded message " + proxyMessage);
         } catch (Exception e) {
             TAB.getInstance().getErrorManager().printError("Failed to decode proxy message \"" + new String(Base64.getDecoder().decode(msg)) + "\" ", e);
@@ -255,6 +261,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         out.writeUTF(classToString.get(message.getClass()));
         TAB.getInstance().debug("[Proxy Support] Encoding message " + message);
         message.write(out);
+        out.writeLong(message.getSequence() >= 0 ? message.getSequence() : snapshotSequence());
         sendMessage(Base64.getEncoder().encodeToString(out.toByteArray()));
         // [6b6t patch 6b6t.4] remember what other proxies should now have, for the heartbeat digest
         if (message instanceof NameTagProxyPlayerData) {
@@ -437,10 +444,10 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         long base = 0, nametag = 0, format = 0;
         TabPlayer[] players = TAB.getInstance().getOnlinePlayers();
         for (TabPlayer p : players) {
-            long[] ids = sentIds.get(p.getUniqueId());
+            AtomicLongArray ids = sentIds.get(p.getUniqueId());
             base += hash(p.getUniqueId(), p.server.getName().hashCode() * 2L + (p.isVanished() ? 1 : 0));
-            nametag += hash(p.getUniqueId(), ids == null ? -1 : ids[0]);
-            format += hash(p.getUniqueId(), ids == null ? -1 : ids[1]);
+            nametag += hash(p.getUniqueId(), ids == null ? -1 : ids.get(0));
+            format += hash(p.getUniqueId(), ids == null ? -1 : ids.get(1));
         }
         return players.length + ":" + Long.toHexString(base) + ":" + Long.toHexString(nametag) + ":" + Long.toHexString(format);
     }
@@ -460,8 +467,10 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
             if (!origin.equals(copy.getSourceProxy())) continue;
             count++;
             base += hash(copy.getUniqueId(), copy.server.getName().hashCode() * 2L + (copy.isVanished() ? 1 : 0));
-            nametag += hash(copy.getUniqueId(), copy.getNametag() == null ? -1 : copy.getNametag().getId());
-            format += hash(copy.getUniqueId(), copy.getTabFormat() == null ? -1 : copy.getTabFormat().getId());
+            NameTagProxyPlayerData tag = copy.getNametag();
+            nametag += hash(copy.getUniqueId(), tag == null ? -1 : tag.getId());
+            PlayerListProxyPlayerData tab = copy.getTabFormat();
+            format += hash(copy.getUniqueId(), tab == null ? -1 : tab.getId());
         }
         return count + ":" + Long.toHexString(base) + ":" + Long.toHexString(nametag) + ":" + Long.toHexString(format);
     }
@@ -474,10 +483,8 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
     }
 
     private void noteSent(@NotNull UUID player, int slot, long id) {
-        long[] ids = sentIds.computeIfAbsent(player, k -> new long[]{-1, -1});
-        synchronized (ids) {
-            if (id > ids[slot]) ids[slot] = id;
-        }
+        AtomicLongArray ids = sentIds.computeIfAbsent(player, k -> new AtomicLongArray(new long[]{-1, -1}));
+        ids.accumulateAndGet(slot, id, Math::max);
     }
 
     /**
@@ -498,10 +505,11 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         DigestCheck check = digestChecks.computeIfAbsent(origin, k -> new DigestCheck());
         long now = System.currentTimeMillis();
         if (check.loaded != null) {
-            if (String.valueOf(check.loaded.size()).equals(theirs[0])) {
+            if (check.loaded.isComplete()) {
                 int removed = 0;
+                Set<UUID> loaded = check.loaded.players();
                 for (ProxyPlayer copy : proxyPlayers.values()) {
-                    if (!origin.equals(copy.getSourceProxy()) || check.loaded.contains(copy.getUniqueId())
+                    if (!origin.equals(copy.getSourceProxy()) || loaded.contains(copy.getUniqueId())
                             || copy.getLastChangeMillis() >= check.requestedAt) continue;
                     TAB.getInstance().getFeatureManager().onQuit(copy);
                     proxyPlayers.remove(copy.getUniqueId(), copy);
@@ -524,25 +532,19 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         if (++check.mismatches < 2 || now - check.requestedAt < RESYNC_INTERVAL_MS) return;
         check.mismatches = 0;
         check.requestedAt = now;
-        check.loaded = new HashSet<>();
+        LoadRequest request = new LoadRequest();
+        check.loaded = new SnapshotChunks(request.getRequestId());
         PatchStats.resyncRequested.incrementAndGet();
         TAB.getInstance().getPlatform().logInfo(new TabTextComponent("[TAB-6b6t] Players of proxy " + shortId(origin)
                 + " differ from its heartbeat (" + mine[0] + " here, " + theirs[0] + " there), requesting them again", (TabTextColor) null));
-        sendMessage(new LoadRequest());
+        sendMessage(request);
     }
 
-    /**
-     * [6b6t patch 6b6t.4] Called by {@link Load} for every player in it (Processing Thread).
-     *
-     * @param   origin
-     *          proxy that sent the Load
-     * @param   player
-     *          player in it
-     */
-    public void noteLoaded(@Nullable String origin, @NotNull UUID player) {
+    /** Records a chunk only in the pending response with the matching request and snapshot identity. */
+    public void noteLoaded(String origin, long request, long snapshot, int index, int count, Set<UUID> players) {
         if (origin == null) return;
         DigestCheck check = digestChecks.get(origin);
-        if (check != null && check.loaded != null) check.loaded.add(player);
+        if (check != null && check.loaded != null) check.loaded.add(request, snapshot, index, count, players);
     }
 
     /**
