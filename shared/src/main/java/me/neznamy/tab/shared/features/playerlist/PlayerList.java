@@ -15,6 +15,9 @@ import me.neznamy.tab.shared.features.layout.impl.common.PlayerSlot;
 import me.neznamy.tab.shared.features.proxy.ProxyPlayer;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.types.*;
+import me.neznamy.tab.shared.patch6b6t.PatchSettings;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
+import me.neznamy.tab.shared.platform.decorators.TrackedTabList;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import me.neznamy.tab.shared.util.DumpUtils;
 import me.neznamy.tab.shared.util.cache.StringToComponentCache;
@@ -137,6 +140,66 @@ public class PlayerList extends RefreshableFeature implements TabListFormatManag
         for (TabPlayer target : TAB.getInstance().getOnlinePlayers()) {
             formatPlayerForEveryone(target, true);
         }
+        // [6b6t patch 6b6t.4] display name audit on the Processing Thread, which owns all display name updates
+        TAB.getInstance().getCpu().getProcessingThread().repeatTask(new TimedCaughtTask(TAB.getInstance().getCpu(),
+                this::auditFormats, getFeatureName(), "6b6t format audit"), 1000);
+    }
+
+    /** [6b6t patch 6b6t.4] Next viewer of the format audit */
+    private final AuditCursor auditCursor = new AuditCursor();
+    private TabPlayer[] auditPlayers;
+    private ProxyPlayer[] auditCopies;
+
+    /**
+     * [6b6t patch 6b6t.4] Self-repair of display names, the counterpart of TeamAudit: every second, at most
+     * audit-slice-ms, round-robin over viewers. A local player listed for the viewer without a display name, or a
+     * player of the other proxy listed with another display name than his copy has, gets it again (this viewer
+     * only). Players and viewers that joined or switched server in the last audit-grace-seconds are skipped.
+     */
+    private void auditFormats() {
+        PatchSettings settings = PatchSettings.get();
+        if (!settings.auditEnabled) return;
+        if (auditPlayers == null) {
+            auditPlayers = TAB.getInstance().getOnlinePlayers();
+            auditCopies = proxy == null ? new ProxyPlayer[0] : proxy.getProxyPlayers().values().toArray(new ProxyPlayer[0]);
+        }
+        TabPlayer[] players = auditPlayers;
+        AuditBudget budget = new AuditBudget(settings.auditSliceNanos, 32, System::nanoTime);
+        long now = System.currentTimeMillis();
+        while (auditCursor.viewer() < players.length && budget.canCheck()) {
+            TabPlayer viewer = players[auditCursor.viewer()];
+            if (TAB.getInstance().getPlayer(viewer.getUniqueId()) != viewer || !viewer.isLoaded() || now - viewer.lastTeamStateChange < settings.auditGraceMillis
+                    || viewer.layoutData.currentLayout != null || !(viewer.getTabList() instanceof TrackedTabList)) { auditCursor.nextViewer(); continue; }
+            TrackedTabList<?> list = (TrackedTabList<?>) viewer.getTabList();
+            while (auditCursor.target() < players.length) {
+                if (!budget.canCheck()) return;
+                TabPlayer target = players[auditCursor.target()];
+                auditCursor.nextTarget();
+                if (TAB.getInstance().getPlayer(target.getUniqueId()) != target || !target.isLoaded() || target.tablistData.disabled.get() || now - target.lastTeamStateChange < settings.auditGraceMillis
+                        || list.getForcedDisplayNames().get(target.getTablistId()) != null || !list.containsEntry(target.getTablistId())) continue;
+                TabComponent format = getTabFormat(target, viewer);
+                if (format == null) continue;
+                updateDisplayName(viewer, target, format);
+                PatchStats.auditRepaired.incrementAndGet();
+                budget.repaired();
+            }
+            while (auditCursor.target() < players.length + auditCopies.length) {
+                if (!budget.canCheck()) return;
+                ProxyPlayer target = auditCopies[auditCursor.target() - players.length];
+                auditCursor.nextTarget();
+                PlayerListProxyPlayerData data = target.getTabFormat();
+                if (proxy.getProxyPlayers().get(target.getUniqueId()) != target || data == null || data.isDisabled() || target.isVanished() || target.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED
+                        || now - target.getLastChangeMillis() < settings.auditGraceMillis || TAB.getInstance().getPlayer(target.getUniqueId()) != null) continue;
+                TabComponent have = list.getForcedDisplayNames().get(target.getTablistId());
+                TabComponent want = data.getFormatComponent();
+                if (have == want || (have != null && have.toLegacyText().equals(want.toLegacyText())) || !list.containsEntry(target.getTablistId())) continue;
+                list.updateDisplayName(target.getTablistId(), want);
+                PatchStats.auditRepaired.incrementAndGet();
+                budget.repaired();
+            }
+            auditCursor.nextViewer();
+        }
+        if (auditCursor.viewer() >= players.length) { auditCursor.reset(); auditPlayers = null; auditCopies = null; }
     }
 
     @Override

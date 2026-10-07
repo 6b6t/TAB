@@ -21,6 +21,9 @@ import java.util.UUID;
 @Setter
 public class ProxyPlayer {
 
+    /** Highest origin sequence of server/vanish state; legacy updates block snapshot refresh. */
+    private long stateSequence = -1;
+
     /** Real UUID of the player */
     @NotNull
     private final UUID uniqueId;
@@ -61,11 +64,11 @@ public class ProxyPlayer {
 
     /** Tablist display name */
     @Nullable
-    private PlayerListProxyPlayerData tabFormat;
+    private volatile PlayerListProxyPlayerData tabFormat;
 
     /** Nametag data */
     @Nullable
-    private NameTagProxyPlayerData nametag;
+    private volatile NameTagProxyPlayerData nametag;
 
     /** Player's connection state */
     @NotNull

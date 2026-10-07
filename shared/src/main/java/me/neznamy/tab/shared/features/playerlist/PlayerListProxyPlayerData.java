@@ -113,6 +113,11 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
         PlayerListProxyPlayerData oldData = target.getTabFormat();
 
         target.setTabFormat(this);
+        // [6b6t patch 6b6t.4] Connected resends can repair viewer state even when the cached
+        // content is unchanged (including when auditing is disabled). Only dedupe disconnected copies.
+        if (target.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED
+                && oldData != null && oldData.disabled == disabled && oldData.prefix.equals(prefix)
+                && oldData.name.equals(name) && oldData.suffix.equals(suffix)) return;
         if (target.getConnectionState() == ProxyPlayer.ConnectionState.CONNECTED) {
             if (disabled) {
                 if (oldData == null || !oldData.disabled) { // [6b6t patch] null-safe (copy without earlier format)

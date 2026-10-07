@@ -2,6 +2,7 @@ package me.neznamy.tab.shared.features.proxy;
 
 import com.saicone.delivery4j.AbstractMessenger;
 import com.saicone.delivery4j.Broker;
+import com.saicone.delivery4j.MessageChannel;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.chat.TabTextColor;
 import me.neznamy.tab.shared.chat.component.TabTextComponent;
@@ -37,6 +38,21 @@ public class ProxyMessengerSupport extends ProxySupport {
         this.brokerSupplier = brokerSupplier;
     }
 
+    /**
+     * [6b6t patch 6b6t.4] Message id cache of the main channel that never drops anything. delivery4j's
+     * {@code cache(true)} gives every sent message a random id in [0, 1,000,000), remembers it for 10 s and DROPS
+     * every received message with a remembered id, also messages of the other proxy: with thousands of messages in
+     * 10 s (Fox restart, mass reconnect) some joins / switches / formats were lost silently. Our own messages are
+     * already ignored by the proxy id inside the message. The id stays in the wire format (6b6t.3 reads it) and is
+     * negative, so a 6b6t.3 receiver (which remembers only its own ids, all >= 0) never drops our messages either.
+     */
+    static final class WireCache extends MessageChannel.Cache {
+        @Override protected void save(int id) { }
+        @Override public boolean contains(int id) { return false; }
+        @Override public int generate() { return -1; }
+        @Override public void clear() { }
+    }
+
     @Override
     public void sendMessage(@NotNull String message) {
         if (messenger == null || !messenger.isEnabled()) return;
@@ -55,12 +71,13 @@ public class ProxyMessengerSupport extends ProxySupport {
                     return broker;
                 }
             };
-            messenger.subscribe(getChannelName()).consume((channel, lines) -> processMessage(lines[0])).cache(true);
+            messenger.subscribe(getChannelName()).consume((channel, lines) -> processMessage(lines[0])).cache(new WireCache());
             // [6b6t patch] Heartbeat on a SEPARATE channel: an unpatched TAB is not subscribed to it and never sees it
             // (an unknown action on the main channel would be logged as an error there). No cache, so our own
             // heartbeat comes back to us and proves our Redis link works.
             messenger.subscribe(getHeartbeatChannelName()).consume((channel, lines) -> {
-                if (lines.length > 0 && lines[0] != null) onHeartbeat(lines[0]);
+                // [6b6t patch 6b6t.4] second line = digest of the sender's players (6b6t.1-.3 send one line)
+                if (lines.length > 0 && lines[0] != null) onHeartbeat(lines[0], lines.length > 1 ? lines[1] : null);
             });
             // [6b6t patch 6b6t.3] Bot flags of each proxy's players, also on a separate channel (see RemoteBots)
             messenger.subscribe(getBotChannelName()).consume((channel, lines) -> {
@@ -114,7 +131,7 @@ public class ProxyMessengerSupport extends ProxySupport {
     protected void sendHeartbeat() {
         if (messenger == null || !messenger.isEnabled()) return;
         try {
-            messenger.send(getHeartbeatChannelName(), getProxy().toString());
+            messenger.send(getHeartbeatChannelName(), getProxy().toString(), localDigest());
         } catch (Exception e) {
             // Ghost removal is skipped while our own heartbeat does not come back, nothing else to do
             TAB.getInstance().debug("[TAB-6b6t] Failed to send heartbeat: " + e);
