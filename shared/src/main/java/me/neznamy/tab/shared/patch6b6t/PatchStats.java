@@ -52,6 +52,9 @@ public final class PatchStats {
     /** Log files rotated */
     public static final AtomicLong logRotations = new AtomicLong();
 
+    /** [6b6t patch 6b6t.4] Requests for the players of another proxy because our copies differed from its heartbeat digest */
+    public static final AtomicLong resyncRequested = new AtomicLong();
+
     private static final Map<String, AtomicLong> ALL = new LinkedHashMap<>();
     private static final Map<String, Long> LAST = new LinkedHashMap<>();
 
@@ -66,6 +69,7 @@ public final class PatchStats {
         ALL.put("entry-conflicts", entryConflicts);
         ALL.put("entry-restored", entryRestored);
         ALL.put("audit-repaired", auditRepaired);
+        ALL.put("resync-requested", resyncRequested);
         ALL.put("ghosts-removed", ghostsRemoved);
         ALL.put("log-rotations", logRotations);
     }

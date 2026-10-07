@@ -290,6 +290,23 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         }
     }
 
+    /**
+     * [6b6t patch 6b6t.4] Called when the self-repair put a copy back on its real server (it was stuck on another
+     * one here). Viewers on that server normally get the entry from the backend, but while the copy looked like it
+     * was on an isolated server, TAB itself removed the entry, and the backend does not send it again.
+     *
+     * @param   player
+     *          repaired copy
+     */
+    public void restoreSameServerEntries(@NotNull ProxyPlayer player) {
+        customThread.execute(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> {
+            if (player.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED) return;
+            for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+                if (viewer.server == player.server && shouldSee(viewer, player)) viewer.getTabList().addEntry(player.asEntry());
+            }
+        }, getFeatureName(), "6b6t entry restore"));
+    }
+
     @Override
     public void onQuit(@NotNull ProxyPlayer player) {
         TabPlayer connected = TAB.getInstance().getPlayer(player.getUniqueId());

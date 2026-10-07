@@ -106,6 +106,11 @@ public class NameTagProxyPlayerData extends ProxyMessage {
         NameTagProxyPlayerData oldData = target.getNametag();
         resolvedTeamName = checkTeamName(target, teamName.substring(0, teamName.length()-1));
         target.setNametag(this);
+        // [6b6t patch 6b6t.4] Same data again (the origin resends everything when asked for its players): nothing
+        // changed, so send no team packet to every viewer. A viewer missing the team is repaired by TeamAudit.
+        if (oldData != null && oldData.disabled == disabled && oldData.teamName.equals(teamName)
+                && oldData.prefix.equals(this.prefix) && oldData.suffix.equals(this.suffix)
+                && oldData.nameVisibility == nameVisibility && resolvedTeamName.equals(oldData.resolvedTeamName)) return;
 
         if (target.getConnectionState() == ProxyPlayer.ConnectionState.CONNECTED) {
             // [6b6t patch] A local player with this UUID is online: the local team must win, never register or

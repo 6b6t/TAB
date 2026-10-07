@@ -5,11 +5,14 @@ import com.google.common.io.ByteArrayDataOutput;
 import com.google.common.io.ByteStreams;
 import lombok.Getter;
 import me.neznamy.tab.shared.TAB;
+import me.neznamy.tab.shared.TabConstants;
 import me.neznamy.tab.shared.TabConstants.CpuUsageCategory;
 import me.neznamy.tab.shared.chat.TabTextColor;
 import me.neznamy.tab.shared.chat.component.TabTextComponent;
 import me.neznamy.tab.shared.cpu.TimedCaughtTask;
 import me.neznamy.tab.shared.data.Server;
+import me.neznamy.tab.shared.features.nametags.NameTagProxyPlayerData;
+import me.neznamy.tab.shared.features.playerlist.PlayerListProxyPlayerData;
 import me.neznamy.tab.shared.features.proxy.message.*;
 import me.neznamy.tab.shared.features.types.*;
 import me.neznamy.tab.shared.patch6b6t.PatchSettings;
@@ -20,6 +23,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -86,6 +90,25 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
 
     /** [6b6t patch 6b6t.3] Receiver of lines on the bot channel (set by the global playerlist), null = ignore */
     @Nullable private volatile Consumer<String> botChannelListener;
+
+    /** [6b6t patch 6b6t.4] Highest id of the nametag [0] and tab format [1] data sent for each local player (digest) */
+    @NotNull private final Map<UUID, long[]> sentIds = new ConcurrentHashMap<>();
+
+    /** [6b6t patch 6b6t.4] Digest check of each origin proxy (Processing Thread only) */
+    @NotNull private final Map<String, DigestCheck> digestChecks = new ConcurrentHashMap<>();
+
+    /** [6b6t patch 6b6t.4] An origin's players are requested again at most this often */
+    private static final long RESYNC_INTERVAL_MS = 60_000;
+
+    /** [6b6t patch 6b6t.4] State of the digest check of one origin proxy */
+    private static class DigestCheck {
+        /** Heartbeats in a row whose digest differed from our copies */
+        int mismatches;
+        /** Time of our last request for its players */
+        long requestedAt;
+        /** Players received in Loads of this origin since that request, null = no request pending */
+        @Nullable Set<UUID> loaded;
+    }
 
     /**
      * TEST ONLY: -Dtab6b6t.testDelayProxyMs=N delays every incoming proxy message by N ms (keeps their order),
@@ -192,6 +215,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
             guard.expire(now, ttl);
             // [6b6t patch r1] queued data whose join never came (stock origin, retired copy, dead origin)
             queuedData.values().removeIf(q -> now - q.getCreatedAt() > Math.max(ttl, 60_000L));
+            sentIds.keySet().removeIf(id -> TAB.getInstance().getPlayer(id) == null); // [6b6t patch 6b6t.4]
             sendHeartbeat();
             removeGhosts();
         }, getFeatureName(), "6b6t maintenance"), HEARTBEAT_INTERVAL_MS);
@@ -216,6 +240,7 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
     @Override
     public void onQuit(@NotNull TabPlayer p) {
         sendMessage(new PlayerQuit(p.getUniqueId()));
+        sentIds.remove(p.getUniqueId()); // [6b6t patch 6b6t.4]
     }
 
     /**
@@ -231,6 +256,12 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         TAB.getInstance().debug("[Proxy Support] Encoding message " + message);
         message.write(out);
         sendMessage(Base64.getEncoder().encodeToString(out.toByteArray()));
+        // [6b6t patch 6b6t.4] remember what other proxies should now have, for the heartbeat digest
+        if (message instanceof NameTagProxyPlayerData) {
+            noteSent(((NameTagProxyPlayerData) message).getPlayerId(), 0, ((NameTagProxyPlayerData) message).getId());
+        } else if (message instanceof PlayerListProxyPlayerData) {
+            noteSent(((PlayerListProxyPlayerData) message).getPlayerId(), 1, ((PlayerListProxyPlayerData) message).getId());
+        }
     }
 
     /**
@@ -372,8 +403,10 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
      *
      * @param   origin
      *          id of the proxy that sent it
+     * @param   digest
+     *          [6b6t patch 6b6t.4] its {@link #localDigest()}, null from 6b6t.1-.3
      */
-    public void onHeartbeat(@NotNull String origin) {
+    public void onHeartbeat(@NotNull String origin, @Nullable String digest) {
         long now = System.currentTimeMillis();
         if (origin.equals(proxy.toString())) {
             if (lastOwnHeartbeatEcho == 0) {
@@ -387,6 +420,129 @@ public abstract class ProxySupport extends TabFeature implements JoinListener, Q
         }
         lastSeen.put(origin, now);
         resyncIfGhosted(origin);
+        if (digest != null && PatchSettings.get().auditEnabled) { // [6b6t patch 6b6t.4] heartbeat of a 6b6t.4+ proxy
+            TAB.getInstance().getCpu().runMeasuredTask(getFeatureName(), CpuUsageCategory.PROXY_MESSAGE, () -> checkDigest(origin, digest));
+        }
+    }
+
+    /**
+     * [6b6t patch 6b6t.4] Digest of this proxy's players as the other proxies should have them, sent as the second
+     * line of the heartbeat (6b6t.1-.3 read only the first line): player count, then three sums of per-player
+     * hashes (server + vanish, last nametag data sent, last tab format data sent).
+     *
+     * @return  digest of the local players
+     */
+    @NotNull
+    String localDigest() {
+        long base = 0, nametag = 0, format = 0;
+        TabPlayer[] players = TAB.getInstance().getOnlinePlayers();
+        for (TabPlayer p : players) {
+            long[] ids = sentIds.get(p.getUniqueId());
+            base += hash(p.getUniqueId(), p.server.getName().hashCode() * 2L + (p.isVanished() ? 1 : 0));
+            nametag += hash(p.getUniqueId(), ids == null ? -1 : ids[0]);
+            format += hash(p.getUniqueId(), ids == null ? -1 : ids[1]);
+        }
+        return players.length + ":" + Long.toHexString(base) + ":" + Long.toHexString(nametag) + ":" + Long.toHexString(format);
+    }
+
+    /**
+     * [6b6t patch 6b6t.4] The same digest computed from our copies of the players of an origin proxy.
+     *
+     * @param   origin
+     *          origin proxy
+     * @return  digest of our copies of its players
+     */
+    @NotNull
+    private String copiesDigest(@NotNull String origin) {
+        int count = 0;
+        long base = 0, nametag = 0, format = 0;
+        for (ProxyPlayer copy : proxyPlayers.values()) {
+            if (!origin.equals(copy.getSourceProxy())) continue;
+            count++;
+            base += hash(copy.getUniqueId(), copy.server.getName().hashCode() * 2L + (copy.isVanished() ? 1 : 0));
+            nametag += hash(copy.getUniqueId(), copy.getNametag() == null ? -1 : copy.getNametag().getId());
+            format += hash(copy.getUniqueId(), copy.getTabFormat() == null ? -1 : copy.getTabFormat().getId());
+        }
+        return count + ":" + Long.toHexString(base) + ":" + Long.toHexString(nametag) + ":" + Long.toHexString(format);
+    }
+
+    private static long hash(@NotNull UUID id, long value) {
+        long z = id.getMostSignificantBits() * 31 + id.getLeastSignificantBits() + value * 0x9E3779B97F4A7C15L;
+        z = (z ^ (z >>> 33)) * 0xff51afd7ed558ccdL;
+        z = (z ^ (z >>> 33)) * 0xc4ceb9fe1a85ec53L;
+        return z ^ (z >>> 33);
+    }
+
+    private void noteSent(@NotNull UUID player, int slot, long id) {
+        long[] ids = sentIds.computeIfAbsent(player, k -> new long[]{-1, -1});
+        synchronized (ids) {
+            if (id > ids[slot]) ids[slot] = id;
+        }
+    }
+
+    /**
+     * [6b6t patch 6b6t.4] Self-repair of copies (missing player, stale server / vanish, lost nametag or tab format
+     * data, e.g. a lost join): compares our copies of an origin's players with the digest in its heartbeat. If they
+     * differ at two heartbeats in a row (30 s apart, so not just messages on the way), asks for its players again;
+     * it answers with Loads and resends the nametag and tab format data of everyone. Copies it no longer has
+     * (lost quit) are removed once a complete answer showed that. Runs on the Processing Thread.
+     *
+     * @param   origin
+     *          proxy that sent the heartbeat
+     * @param   digest
+     *          its {@link #localDigest()}
+     */
+    private void checkDigest(@NotNull String origin, @NotNull String digest) {
+        String[] theirs = digest.split(":");
+        if (theirs.length < 4) return;
+        DigestCheck check = digestChecks.computeIfAbsent(origin, k -> new DigestCheck());
+        long now = System.currentTimeMillis();
+        if (check.loaded != null) {
+            if (String.valueOf(check.loaded.size()).equals(theirs[0])) {
+                int removed = 0;
+                for (ProxyPlayer copy : proxyPlayers.values()) {
+                    if (!origin.equals(copy.getSourceProxy()) || check.loaded.contains(copy.getUniqueId())
+                            || copy.getLastChangeMillis() >= check.requestedAt) continue;
+                    TAB.getInstance().getFeatureManager().onQuit(copy);
+                    proxyPlayers.remove(copy.getUniqueId(), copy);
+                    PatchStats.ghostsRemoved.incrementAndGet();
+                    removed++;
+                }
+                if (removed > 0) TAB.getInstance().getPlatform().logInfo(new TabTextComponent("[TAB-6b6t] Removed " + removed
+                        + " copies of players who are no longer on proxy " + shortId(origin), (TabTextColor) null));
+            }
+            check.loaded = null;
+        }
+        String[] mine = copiesDigest(origin).split(":");
+        boolean same = mine[0].equals(theirs[0]) && mine[1].equals(theirs[1])
+                && (TAB.getInstance().getNameTagManager() == null || mine[2].equals(theirs[2]))
+                && (TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PLAYER_LIST) == null || mine[3].equals(theirs[3]));
+        if (same) {
+            check.mismatches = 0;
+            return;
+        }
+        if (++check.mismatches < 2 || now - check.requestedAt < RESYNC_INTERVAL_MS) return;
+        check.mismatches = 0;
+        check.requestedAt = now;
+        check.loaded = new HashSet<>();
+        PatchStats.resyncRequested.incrementAndGet();
+        TAB.getInstance().getPlatform().logInfo(new TabTextComponent("[TAB-6b6t] Players of proxy " + shortId(origin)
+                + " differ from its heartbeat (" + mine[0] + " here, " + theirs[0] + " there), requesting them again", (TabTextColor) null));
+        sendMessage(new LoadRequest());
+    }
+
+    /**
+     * [6b6t patch 6b6t.4] Called by {@link Load} for every player in it (Processing Thread).
+     *
+     * @param   origin
+     *          proxy that sent the Load
+     * @param   player
+     *          player in it
+     */
+    public void noteLoaded(@Nullable String origin, @NotNull UUID player) {
+        if (origin == null) return;
+        DigestCheck check = digestChecks.get(origin);
+        if (check != null && check.loaded != null) check.loaded.add(player);
     }
 
     /**

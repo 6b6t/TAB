@@ -19,7 +19,10 @@ public class LoadRequest extends ProxyMessage {
 
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
-        proxySupport.sendMessage(new Load(TAB.getInstance().getOnlinePlayers()));
+        // [6b6t patch 6b6t.4] in parts that fit into one message (see Load.split)
+        for (Load load : Load.split(TAB.getInstance().getOnlinePlayers())) {
+            proxySupport.sendMessage(load);
+        }
         TAB.getInstance().getFeatureManager().onProxyLoadRequest();
     }
 }

@@ -6,15 +6,18 @@ import lombok.ToString;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.TabConstants;
 import me.neznamy.tab.shared.data.Server;
+import me.neznamy.tab.shared.features.globalplayerlist.GlobalPlayerList;
 import me.neznamy.tab.shared.features.proxy.ProxyPlayer;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.proxy.QueuedData;
 import me.neznamy.tab.shared.features.proxy.StaleMessageGuard;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
 import me.neznamy.tab.shared.platform.TabList;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -93,7 +96,11 @@ public class PlayerJoin extends ProxyMessage {
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer decodedPlayer = new ProxyPlayer(uniqueId, tablistId, name, server, vanished, staff, skin);
         decodedPlayer.setSourceProxy(getSourceProxy()); // [6b6t patch] remember which proxy owns this copy
-        if (proxySupport.getProxyPlayers().containsKey(decodedPlayer.getUniqueId())) {
+        ProxyPlayer existing = proxySupport.getProxyPlayers().get(uniqueId);
+        if (existing != null) {
+            // [6b6t patch 6b6t.4] A join of a copy we already have comes from a Load (answer to "send me your players").
+            // From the copy's own proxy it is the current state: apply it, so a lost server switch / vanish update heals.
+            if (Objects.equals(existing.getSourceProxy(), getSourceProxy())) refresh(existing, proxySupport);
             TAB.getInstance().debug("[Proxy Support] The proxy player " + decodedPlayer.getName() + " is already connected, cannot process join.");
             return;
         }
@@ -101,6 +108,7 @@ public class PlayerJoin extends ProxyMessage {
         QueuedData data = proxySupport.getQueuedData().remove(decodedPlayer.getUniqueId());
         // [6b6t patch] only take data queued by the same proxy (data of another proxy belongs to another session)
         if (data != null && (data.getSourceProxy() == null || data.getSourceProxy().equals(getSourceProxy()))) {
+            if (data.getServer() != null) decodedPlayer.setServer(data.getServer()); // [6b6t patch 6b6t.4] switch that overtook the join
             decodedPlayer.setBelowname(data.getBelowname());
             decodedPlayer.setTabFormat(data.getTabFormat());
             decodedPlayer.setNametag(data.getNametag());
@@ -110,6 +118,29 @@ public class PlayerJoin extends ProxyMessage {
         }
         if (TAB.getInstance().getPlayer(decodedPlayer.getUniqueId()) == null) {
             TAB.getInstance().getFeatureManager().onJoin(decodedPlayer);
+        }
+    }
+
+    /**
+     * [6b6t patch 6b6t.4] Applies the server and vanish state of this join to an existing copy of the same proxy.
+     * Runs on the Processing Thread (Load has no custom thread).
+     *
+     * @param   copy
+     *          existing copy of this player from the same proxy
+     * @param   proxySupport
+     *          proxy support feature
+     */
+    private void refresh(@NotNull ProxyPlayer copy, @NotNull ProxySupport proxySupport) {
+        if (copy.server != server) {
+            new ServerSwitch(uniqueId, server).process(proxySupport);
+            GlobalPlayerList global = TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.GLOBAL_PLAYER_LIST);
+            if (global != null) global.restoreSameServerEntries(copy);
+            PatchStats.auditRepaired.incrementAndGet();
+        }
+        if (copy.isVanished() != vanished) {
+            copy.setVanished(vanished);
+            TAB.getInstance().getFeatureManager().onVanishStatusChange(copy);
+            PatchStats.auditRepaired.incrementAndGet();
         }
     }
 }
