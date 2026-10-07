@@ -5,6 +5,10 @@ import com.google.common.io.ByteArrayDataOutput;
 import com.google.common.io.ByteStreams;
 import lombok.ToString;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
+import me.neznamy.tab.shared.TAB;
+import me.neznamy.tab.shared.chat.component.TabTextComponent;
+import me.neznamy.tab.shared.chat.TabTextColor;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import org.jetbrains.annotations.NotNull;
 
@@ -64,11 +68,34 @@ public class Load extends ProxyMessage {
         List<Load> loads = new ArrayList<>();
         List<PlayerJoin> part = new ArrayList<>();
         int size = 0;
+        boolean complete = true;
         for (PlayerJoin join : players) {
             ByteArrayDataOutput out = ByteStreams.newDataOutput();
-            join.write(out);
+            try {
+                join.write(out);
+            } catch (AssertionError unencodable) {
+                // Guava wraps DataOutputStream.writeUTF failures in AssertionError.
+                if (!(unencodable.getCause() instanceof java.io.UTFDataFormatException)) throw unencodable;
+                skipped(join, "PlayerJoin cannot be encoded with writeUTF");
+                complete = false;
+                continue;
+            }
             int bytes = out.toByteArray().length;
-            if (bytes > MAX_PLAYER_BYTES) throw new IllegalArgumentException("PlayerJoin exceeds safe Load size: " + bytes);
+            if (bytes > MAX_PLAYER_BYTES) {
+                Load singleton = new Load(java.util.Collections.singletonList(join));
+                if (!fitsEnvelope(singleton)) {
+                    skipped(join, "PlayerJoin exceeds complete Load wire limit: " + bytes + " bytes");
+                    complete = false;
+                    continue;
+                }
+                if (!part.isEmpty()) {
+                    loads.add(new Load(part));
+                    part = new ArrayList<>();
+                    size = 0;
+                }
+                loads.add(singleton);
+                continue;
+            }
             if (!part.isEmpty() && size + bytes > MAX_PLAYER_BYTES) {
                 loads.add(new Load(part));
                 part = new ArrayList<>();
@@ -78,8 +105,27 @@ public class Load extends ProxyMessage {
             size += bytes;
         }
         if (!part.isEmpty() || loads.isEmpty()) loads.add(new Load(part));
-        for (int i = 0; i < loads.size(); i++) { loads.get(i).chunkIndex = i; loads.get(i).chunkCount = loads.size(); }
+        // Zero count keeps an incomplete response non-authoritative, even after every sent chunk arrives.
+        for (int i = 0; i < loads.size(); i++) { loads.get(i).chunkIndex = i; loads.get(i).chunkCount = complete ? loads.size() : 0; }
         return loads;
+    }
+
+    /** Test the complete ProxySupport envelope, whose UUID and message name have fixed UTF sizes. */
+    private static boolean fitsEnvelope(Load load) {
+        ByteArrayDataOutput envelope = ByteStreams.newDataOutput();
+        envelope.writeUTF("00000000-0000-0000-0000-000000000000");
+        envelope.writeUTF(Load.class.getSimpleName());
+        load.write(envelope);
+        envelope.writeLong(0); // ProxyMessage origin sequence
+        // Base64 is ASCII, so its character count equals its modified-UTF byte count.
+        return 4L * ((envelope.toByteArray().length + 2L) / 3L) <= 65535;
+    }
+
+    private static void skipped(PlayerJoin join, String reason) {
+        PatchStats.loadEntriesSkipped.incrementAndGet();
+        TAB.getInstance().getPlatform().logInfo(new TabTextComponent(
+                "[TAB-6b6t] Skipped Load entry " + join.getSubjectId() + ": " + reason
+                        + "; response cannot authorize deletion", (TabTextColor) null));
     }
 
     /**

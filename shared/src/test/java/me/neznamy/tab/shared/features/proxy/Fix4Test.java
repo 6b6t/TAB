@@ -19,6 +19,7 @@ class Fix4Test {
     static final UUID P = UUID.randomUUID();
     TAB old;
     ProxySupport proxy;
+    final List<String> logs = new ArrayList<>();
     static void field(Object object, Class<?> type, String name, Object value) throws Exception {
         Field f = type.getDeclaredField(name); f.setAccessible(true); f.set(object, value);
     }
@@ -32,7 +33,7 @@ class Fix4Test {
         field(tab, TAB.class, "data", new HashMap<>());
         field(tab, TAB.class, "onlinePlayers", new TabPlayer[0]);
         field(tab, TAB.class, "platform", java.lang.reflect.Proxy.newProxyInstance(
-                getClass().getClassLoader(), new Class<?>[]{me.neznamy.tab.shared.platform.Platform.class}, (o,m,args) -> null));
+                getClass().getClassLoader(), new Class<?>[]{me.neznamy.tab.shared.platform.Platform.class}, (o,m,args) -> { if (m.getName().equals("logInfo")) logs.add(((me.neznamy.tab.shared.chat.component.TabTextComponent) args[0]).getText()); return null; }));
         PatchSettings.setForTests(new Properties());
         proxy = new ProxySupport("test") {
             public void sendMessage(String message) { }
@@ -127,8 +128,76 @@ class Fix4Test {
         assertEquals(80, total);
         ByteArrayDataOutput legacy = ByteStreams.newDataOutput(); legacy.writeInt(1); players.get(0).write(legacy);
         assertDoesNotThrow(() -> new Load(ByteStreams.newDataInput(legacy.toByteArray())));
-        assertThrows(IllegalArgumentException.class, () -> Load.splitPlayers(List.of(join("worker", false, 45000))));
+        assertEquals(1, Load.splitPlayers(List.of(join("worker", false, 45000))).size());
         assertEquals(1, Load.split(new TabPlayer[0]).size());
+    }
+    @Test void largeWireFittingEntryIsSingletonAndOrdinaryChunksSurvive() throws Exception {
+        List<PlayerJoin> players = new ArrayList<>();
+        for (int i = 0; i < 80; i++) players.add(join("worker", false, 1500));
+        players.add(40, join("worker", false, 46000));
+        List<Load> chunks = Load.splitPlayers(players);
+        List<String> sent = new ArrayList<>();
+        ProxySupport sender = new ProxySupport("test") {
+            public void sendMessage(String message) { sent.add(message); }
+            public void register() { }
+            public void unregister() { }
+        };
+        SnapshotChunks snapshot = new SnapshotChunks(7);
+        int total = 0;
+        boolean large = false;
+        for (Load load : chunks) {
+            load.setSnapshot(7, 10); sender.sendMessage(load);
+            String wire = sent.getLast();
+            assertDoesNotThrow(() -> ByteStreams.newDataOutput().writeUTF(wire));
+            assertNotNull(new com.saicone.delivery4j.MessageChannel("test").encode(wire));
+            ByteArrayDataInput in = ByteStreams.newDataInput(Base64.getDecoder().decode(wire));
+            in.readUTF(); assertEquals("Load", in.readUTF());
+            int n = in.readInt(); total += n;
+            for (int i = 0; i < n; i++) {
+                PlayerJoin player = new PlayerJoin(in);
+                ByteArrayDataOutput out = ByteStreams.newDataOutput(); player.write(out);
+                if (out.toByteArray().length > 45000) { large = true; assertEquals(1, n); }
+            }
+            snapshot.add(in.readLong(), in.readLong(), in.readInt(), in.readInt(), Set.of(P));
+        }
+        assertEquals(81, total); assertTrue(large); assertTrue(snapshot.isComplete());
+    }
+    @Test void unfitEntryDoesNotCancelRecoveryOrAuthorizeDeletion() {
+        long skipped = me.neznamy.tab.shared.patch6b6t.PatchStats.loadEntriesSkipped.get();
+        List<PlayerJoin> players = new ArrayList<>();
+        for (int i = 0; i < 80; i++) players.add(join("worker", false, 1500));
+        players.add(40, join("worker", false, 60000));
+        SnapshotChunks snapshot = new SnapshotChunks(7);
+        int total = 0;
+        for (Load load : Load.splitPlayers(players)) {
+            load.setSnapshot(7, 10);
+            ByteArrayDataOutput out = ByteStreams.newDataOutput(); load.write(out);
+            ByteArrayDataInput in = ByteStreams.newDataInput(out.toByteArray());
+            int n = in.readInt(); total += n;
+            for (int i = 0; i < n; i++) new PlayerJoin(in);
+            snapshot.add(in.readLong(), in.readLong(), in.readInt(), in.readInt(), Set.of(P));
+        }
+        assertEquals(80, total); assertFalse(snapshot.isComplete());
+        assertEquals(skipped + 1, me.neznamy.tab.shared.patch6b6t.PatchStats.loadEntriesSkipped.get());
+        assertEquals(1, logs.size());
+        assertTrue(logs.getFirst().contains(P.toString()));
+        assertTrue(logs.getFirst().contains("cannot authorize deletion"));
+    }
+    @Test void unencodableEntryIsIsolatedEvenWhenItIsTheOnlyPlayer() throws Exception {
+        PlayerJoin invalid = join("worker", false, 0);
+        field(invalid, PlayerJoin.class, "skin", new me.neznamy.tab.shared.platform.TabList.Skin("a".repeat(65536), null));
+        long skipped = me.neznamy.tab.shared.patch6b6t.PatchStats.loadEntriesSkipped.get();
+        List<Load> chunks = Load.splitPlayers(List.of(invalid));
+        assertEquals(1, chunks.size());
+        chunks.getFirst().setSnapshot(7, 10);
+        ByteArrayDataOutput out = ByteStreams.newDataOutput(); chunks.getFirst().write(out);
+        ByteArrayDataInput in = ByteStreams.newDataInput(out.toByteArray());
+        assertEquals(0, in.readInt());
+        SnapshotChunks snapshot = new SnapshotChunks(7);
+        snapshot.add(in.readLong(), in.readLong(), in.readInt(), in.readInt(), Set.of());
+        assertFalse(snapshot.isComplete());
+        assertEquals(skipped + 1, me.neznamy.tab.shared.patch6b6t.PatchStats.loadEntriesSkipped.get());
+        assertEquals(1, logs.size());
     }
     @Test void budgetStopsInsideViewerAndCapsRepairs() {
         AtomicLong clock = new AtomicLong(); AuditBudget b = new AuditBudget(5, 2, clock::get);

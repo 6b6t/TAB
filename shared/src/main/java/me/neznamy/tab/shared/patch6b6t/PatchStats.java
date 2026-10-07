@@ -55,6 +55,9 @@ public final class PatchStats {
     /** [6b6t patch 6b6t.4] Requests for the players of another proxy because our copies differed from its heartbeat digest */
     public static final AtomicLong resyncRequested = new AtomicLong();
 
+    /** Player entries omitted from Load responses because they cannot fit the transport. */
+    public static final AtomicLong loadEntriesSkipped = new AtomicLong();
+
     private static final Map<String, AtomicLong> ALL = new LinkedHashMap<>();
     private static final Map<String, Long> LAST = new LinkedHashMap<>();
 
@@ -70,6 +73,7 @@ public final class PatchStats {
         ALL.put("entry-restored", entryRestored);
         ALL.put("audit-repaired", auditRepaired);
         ALL.put("resync-requested", resyncRequested);
+        ALL.put("load-entries-skipped", loadEntriesSkipped);
         ALL.put("ghosts-removed", ghostsRemoved);
         ALL.put("log-rotations", logRotations);
     }
