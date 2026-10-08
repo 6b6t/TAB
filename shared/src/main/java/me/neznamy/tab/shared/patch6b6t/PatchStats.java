@@ -58,6 +58,9 @@ public final class PatchStats {
     /** Player entries omitted from Load responses because they cannot fit the transport. */
     public static final AtomicLong loadEntriesSkipped = new AtomicLong();
 
+    /** [6b6t patch 6b6t.7] Global playerlist entries put back after a foreign remove deleted them for a viewer */
+    public static final AtomicLong entryReadded = new AtomicLong();
+
     private static final Map<String, AtomicLong> ALL = new LinkedHashMap<>();
     private static final Map<String, Long> LAST = new LinkedHashMap<>();
 
@@ -74,6 +77,7 @@ public final class PatchStats {
         ALL.put("audit-repaired", auditRepaired);
         ALL.put("resync-requested", resyncRequested);
         ALL.put("load-entries-skipped", loadEntriesSkipped);
+        ALL.put("entry-readded", entryReadded);
         ALL.put("ghosts-removed", ghostsRemoved);
         ALL.put("log-rotations", logRotations);
     }

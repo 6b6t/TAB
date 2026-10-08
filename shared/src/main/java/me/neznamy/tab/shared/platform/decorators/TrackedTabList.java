@@ -9,6 +9,8 @@ import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.TabConstants;
 import me.neznamy.tab.shared.chat.component.TabComponent;
 import me.neznamy.tab.shared.cpu.TimedCaughtTask;
+import me.neznamy.tab.shared.features.globalplayerlist.GlobalPlayerList;
+import me.neznamy.tab.shared.patch6b6t.OwnRemoveLedger;
 import me.neznamy.tab.shared.platform.TabList;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import org.jetbrains.annotations.NotNull;
@@ -51,6 +53,85 @@ public abstract class TrackedTabList<P extends TabPlayer> implements TabList {
 
     /** Flag tracking whether all real players should be hidden or not */
     protected boolean allPlayersHidden;
+
+    /** [6b6t patch 6b6t.7] Removes this list wrote itself and that have not passed the packet pipeline yet */
+    private final OwnRemoveLedger ownRemoves = new OwnRemoveLedger();
+
+    /**
+     * [6b6t patch 6b6t.7] Entries a foreign remove deleted on the client, with no add of them passing the pipeline
+     * since. Only entries the global playerlist may have to put back are marked; each mark is consumed by its check.
+     */
+    private final Set<UUID> foreignRemoved = ConcurrentHashMap.newKeySet();
+
+    /**
+     * [6b6t patch 6b6t.7] Marks an entry deleted on the client by a foreign remove (packet pipeline thread).
+     *
+     * @param   entry
+     *          tab list entry id
+     */
+    public void markForeignRemove(@NonNull UUID entry) {
+        foreignRemoved.add(entry);
+    }
+
+    /**
+     * [6b6t patch 6b6t.7] Must be called right before this list writes a remove packet of an entry itself
+     * (exactly one packet per call), so the pipeline can tell it from removes written by anyone else.
+     *
+     * @param   entry
+     *          tab list entry id
+     */
+    protected void noteOwnRemove(@NonNull UUID entry) {
+        if (tracksForeignRemoves()) ownRemoves.sent(entry);
+    }
+
+    /**
+     * [6b6t patch 6b6t.7] Foreign removes are handled for 1.20.2+ viewers only: Velocity also sends older clients a
+     * remove of every entry on each of their server switches, which the global playerlist handles itself.
+     *
+     * @return  {@code true} if this viewer's removes are classified
+     */
+    private boolean tracksForeignRemoves() {
+        return player.getVersionId() >= ProtocolVersion.V1_20_2.getNetworkId();
+    }
+
+    /**
+     * [6b6t patch 6b6t.7] Called by the packet pipeline for every remove packet on its way to the client. Entries
+     * removed by somebody else than this list (usually the backend server the target just left, whose remove can
+     * arrive after the global playerlist already showed him on his new server) are passed to the global
+     * playerlist, which puts back what it shows.
+     *
+     * @param   entries
+     *          entries removed by the packet
+     */
+    protected void onClientRemove(@NonNull Collection<UUID> entries) {
+        if (!tracksForeignRemoves()) return;
+        List<UUID> foreign = ownRemoves.foreign(entries);
+        if (foreign.isEmpty()) return;
+        GlobalPlayerList global = TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.GLOBAL_PLAYER_LIST);
+        if (global != null) global.onForeignEntryRemove(player, foreign);
+    }
+
+    /**
+     * [6b6t patch 6b6t.7] Called by the packet pipeline for every entry an add packet puts on the client.
+     *
+     * @param   entry
+     *          tab list entry id
+     */
+    protected void onClientAdd(@NonNull UUID entry) {
+        if (!foreignRemoved.isEmpty()) foreignRemoved.remove(entry);
+    }
+
+    /**
+     * [6b6t patch 6b6t.7] Returns {@code true} if a foreign remove deleted this entry on the client and no add of it
+     * passed the pipeline since, and forgets the mark.
+     *
+     * @param   entry
+     *          tab list entry id
+     * @return  {@code true} if the client still misses the entry after a foreign remove
+     */
+    public boolean consumeForeignRemove(@NonNull UUID entry) {
+        return foreignRemoved.remove(entry);
+    }
 
     @Override
     public void updateDisplayName(@NonNull UUID entry, @Nullable TabComponent displayName) {
