@@ -58,6 +58,9 @@ public final class PatchSettings {
     /** Hide bots from the global playerlist of viewers with LuckPerms meta botsfilter-hide-tab=true (6b6t.3) */
     public final boolean botTabFilter;
 
+    /** Put back a global playerlist entry that a foreign remove (e.g. the backend's late remove) deleted (6b6t.7) */
+    public final boolean entryReadd;
+
     private PatchSettings(@NotNull Properties p, @NotNull List<String> warnings) {
         staleGuard = bool(p, "stale-guard", true, warnings);
         tombstoneTtlMillis = 1000L * integer(p, "tombstone-ttl-seconds", 120, 5, 3600, warnings);
@@ -70,6 +73,7 @@ public final class PatchSettings {
         rotationKeep = integer(p, "rotation-keep", 3, 1, 50, warnings);
         statsIntervalMinutes = integer(p, "stats-interval-minutes", 5, 0, 1440, warnings);
         botTabFilter = bool(p, "bot-tab-filter", true, warnings);
+        entryReadd = bool(p, "entry-readd", true, warnings);
     }
 
     /**

@@ -15,9 +15,12 @@ import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.types.*;
 import me.neznamy.tab.shared.hook.LuckPermsHook;
 import me.neznamy.tab.shared.patch6b6t.BotTabFilter;
+import me.neznamy.tab.shared.patch6b6t.EntryReaddLimiter;
 import me.neznamy.tab.shared.patch6b6t.PatchSettings;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
 import me.neznamy.tab.shared.patch6b6t.RemoteBots;
 import me.neznamy.tab.shared.platform.TabList;
+import me.neznamy.tab.shared.platform.decorators.TrackedTabList;
 import me.neznamy.tab.api.integration.VanishIntegration;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import me.neznamy.tab.shared.util.OnlinePlayers;
@@ -46,6 +49,9 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
 
     /** [6b6t patch 6b6t.3] Ticks of the 10 s bot flag task, every 3rd also sends our bot list */
     private int botTicks;
+
+    /** [6b6t patch 6b6t.7] Caps re-adds after foreign removes per viewer and entry (this feature's thread only) */
+    private final EntryReaddLimiter readdLimiter = new EntryReaddLimiter();
 
     /**
      * Constructs new instance and registers new placeholders.
@@ -143,6 +149,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
     @Override
     public void onQuit(@NotNull TabPlayer disconnectedPlayer) {
         onlinePlayers.removePlayer(disconnectedPlayer);
+        readdLimiter.forget(disconnectedPlayer.getUniqueId()); // [6b6t patch 6b6t.7]
         for (TabPlayer all : onlinePlayers.getPlayers()) {
             if (disconnectedPlayer.server == all.server) continue; // Already removed by server itself
             all.getTabList().removeEntry(disconnectedPlayer.getTablistId());
@@ -306,6 +313,92 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
                 if (viewer.server == player.server && shouldSee(viewer, player)) viewer.getTabList().addEntry(player.asEntry());
             }
         }, getFeatureName(), "6b6t entry restore"));
+    }
+
+    // ------------------
+    // [6b6t patch 6b6t.7] entries deleted by a foreign remove
+    // ------------------
+
+    /**
+     * [6b6t patch 6b6t.7] Called from the viewer's packet pipeline (any thread) with the entries of a tab list remove
+     * that TAB did not send itself. The usual sender is the backend the target just left: it removes him from its
+     * players' lists only when it processes his disconnect, on its next tick, which can be later than the moment
+     * this feature added his entry for a viewer on that backend (a remote player's server switch arrives over the
+     * proxy messenger with no delay; a local player's re-add waits a fixed 200 ms). That late remove used to delete
+     * the entry for good. Every entry this feature should show is put back right after the remove, on this
+     * feature's thread, where it is checked against the current state (an intended remove is never undone).
+     *
+     * @param   viewer
+     *          player whose tab list lost the entries
+     * @param   entries
+     *          tab list ids removed by a foreign packet
+     */
+    public void onForeignEntryRemove(@NotNull TabPlayer viewer, @NotNull Collection<UUID> entries) {
+        if (!PatchSettings.get().entryReadd || onlinePlayers == null) return;
+        // Cheap filter on the pipeline thread: only players this feature may show on another server than the viewer's
+        List<UUID> candidates = null;
+        for (UUID id : entries) {
+            if (!isGlobalCandidate(viewer, id)) continue;
+            if (viewer.getTabList() instanceof TrackedTabList) ((TrackedTabList<?>) viewer.getTabList()).markForeignRemove(id);
+            if (candidates == null) candidates = new ArrayList<>(entries.size());
+            candidates.add(id);
+        }
+        if (candidates == null) return;
+        List<UUID> ids = candidates;
+        // Checked a moment later, so adds that were already on their way (this feature's own add after a server
+        // switch, the 200 ms delayed re-add of a local player) pass the pipeline first and clear the mark
+        customThread.executeLater(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> {
+            if (!viewer.isOnline() || !onlinePlayers.contains(viewer)) return;
+            for (UUID id : ids) {
+                if (stillMissing(viewer, id)) readdIfShown(viewer, id);
+            }
+        }, getFeatureName(), "6b6t entry re-add"), READD_CHECK_DELAY_MS);
+    }
+
+    /** [6b6t patch 6b6t.7] Delay between a foreign remove and the check whether its entry must be put back */
+    public static final int READD_CHECK_DELAY_MS = 250;
+
+    private static boolean stillMissing(@NotNull TabPlayer viewer, @NotNull UUID id) {
+        if (viewer.getTabList() instanceof TrackedTabList) return ((TrackedTabList<?>) viewer.getTabList()).consumeForeignRemove(id);
+        return !viewer.getTabList().containsEntry(id);
+    }
+
+    private boolean isGlobalCandidate(@NotNull TabPlayer viewer, @NotNull UUID id) {
+        TabPlayer local = TAB.getInstance().getPlayerByTabListUUID(id);
+        if (local != null) return local != viewer && local.server != viewer.server;
+        if (proxy == null) return false;
+        ProxyPlayer copy = proxy.getProxyPlayers().get(id);
+        return copy != null && copy.server != viewer.server;
+    }
+
+    /**
+     * [6b6t patch 6b6t.7] Puts an entry back for one viewer if this feature shows it there and it is missing now.
+     * Runs on this feature's thread, only when no add of the entry reached the viewer since the foreign remove.
+     *
+     * @param   viewer
+     *          viewer
+     * @param   id
+     *          tab list id of the removed entry
+     */
+    private void readdIfShown(@NotNull TabPlayer viewer, @NotNull UUID id) {
+        TabPlayer local = TAB.getInstance().getPlayerByTabListUUID(id);
+        TabList.Entry entry;
+        if (local != null) {
+            if (local == viewer || local.server == viewer.server || !onlinePlayers.contains(local) || !shouldSee(viewer, local)) return;
+            entry = getAddInfoData(local, viewer);
+        } else {
+            if (proxy == null) return;
+            ProxyPlayer copy = proxy.getProxyPlayers().get(id);
+            if (copy == null || copy.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED
+                    || copy.server == viewer.server || !shouldSee(viewer, copy)) return;
+            entry = copy.asEntry();
+        }
+        if (!readdLimiter.tryAcquire(viewer.getUniqueId(), id, System.currentTimeMillis())) {
+            TAB.getInstance().debug("[TAB-6b6t] Not putting back entry " + id + " for " + viewer.getName() + " again (removed too often)");
+            return;
+        }
+        viewer.getTabList().addEntry(entry);
+        PatchStats.entryReadded.incrementAndGet();
     }
 
     @Override
