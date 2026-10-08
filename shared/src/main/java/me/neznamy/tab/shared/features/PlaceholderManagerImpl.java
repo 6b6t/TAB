@@ -222,10 +222,30 @@ public class PlaceholderManagerImpl extends RefreshableFeature implements Placeh
     public synchronized <T extends Placeholder> PlaceholderReference registerPlaceholder(@NotNull T placeholder) {
         PlaceholderReference existing = registeredPlaceholders.get(placeholder.getIdentifier());
         if (existing != null) {
-            existing.setHandle((TabPlaceholder) placeholder);
+            TabPlaceholder replacement = (TabPlaceholder) placeholder;
+            TabPlaceholder previous = existing.getHandle();
+            if (previous != replacement) {
+                // Features subscribe before API plugins register, so keep their subscriptions.
+                for (RefreshableFeature feature : new HashSet<>(previous.getUsedByFeatures())) {
+                    replacement.addUsedFeature(feature);
+                }
+                // Nested placeholders hold direct handles: move both sides of each link.
+                for (TabPlaceholder parent : new ArrayList<>(previous.getParents())) {
+                    parent.getChildren().remove(previous);
+                    parent.addChild(replacement);
+                    replacement.addParent(parent);
+                }
+                for (TabPlaceholder child : new ArrayList<>(previous.getChildren())) {
+                    child.getParents().remove(previous);
+                    child.addParent(replacement);
+                    replacement.addChild(child);
+                }
+            }
+            existing.setHandle(replacement);
+            recalculateUsedPlaceholders();
             for (TabPlayer p : TAB.getInstance().getOnlinePlayers()) {
                 if (!p.isLoaded()) continue;
-                for (RefreshableFeature f : ((TabPlaceholder)placeholder).getUsedByFeatures()) {
+                for (RefreshableFeature f : replacement.getUsedByFeatures()) {
                     TimedCaughtTask task = new TimedCaughtTask(cpu, () -> f.refresh(p, true), f.getFeatureName(), f.getRefreshDisplayName());
                     if (f instanceof CustomThreaded) {
                         ((CustomThreaded) f).getCustomThread().execute(task);
