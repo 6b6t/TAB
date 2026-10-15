@@ -232,7 +232,7 @@ class BridgeRequestsTest {
         BridgeRequests.carry(a, "worker-2", values, 0);
         BridgeRequests.carry(b, "worker-2", values, 0);
         BridgeRequests.carry(c, "worker-2", values, 0);
-        assertEquals(Map.of("%lp_color%", "&a"), BridgeRequests.takeCarry(a, "worker-2", 1_000), "relational values are not kept");
+        assertEquals(Map.of("%lp_color%", "&a"), BridgeRequests.takeCarry(a, "worker-2", 1_000).values, "relational values are not kept");
         assertNull(BridgeRequests.takeCarry(a, "worker-2", 1_000), "taken once");
         assertNull(BridgeRequests.takeCarry(b, "worker-1", 1_000), "other server: ask fresh");
         assertNull(BridgeRequests.takeCarry(c, "worker-2", 61_000), "too old");

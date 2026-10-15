@@ -281,9 +281,15 @@ class BridgeProxyTest {
         Fake before = player("Player1", "worker-2");
         before.getPlaceholders().put(COLOR, "&b");
         before.getPlaceholders().put(SEAL, "{Remote1=gold}");
+        before.vanished = true;
+        field(before, ProxyTabPlayer.class, "gamemode", 3);
         BridgeCarry.snapshot(new TabPlayer[]{before});
         assertEquals(1, BridgeRequests.carriedCount());
-        Map<String, String> carried = BridgeRequests.takeCarry(before.getUniqueId(), "worker-2", System.currentTimeMillis());
+        BridgeRequests.Carry carry = BridgeRequests.takeCarry(before.getUniqueId(), "worker-2", System.currentTimeMillis());
+        assertNotNull(carry);
+        assertTrue(carry.vanished, "a vanished player stays hidden through the reload");
+        assertEquals(3, carry.gamemode);
+        Map<String, String> carried = carry.values;
         assertEquals(Map.of(COLOR, "&b"), carried);
         // the new copy of the player starts with them; bridge placeholders registered before the players get them now
         Fake after = player("Player1", "worker-2");

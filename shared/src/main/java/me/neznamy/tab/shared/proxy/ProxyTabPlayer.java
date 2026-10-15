@@ -83,12 +83,17 @@ public abstract class ProxyTabPlayer extends TabPlayer {
         super(platform, player, uniqueId, name, server, "N/A", protocolVersion, TAB.getInstance().getConfiguration().getConfig().isOnlineUuidInTabList());
         // [6b6t patch 6b6t.8] After a reload keep the values of the old copy of this player (same server) and send the
         // request in the reload's staggered batches; otherwise ask the bridge right away as before.
-        Map<String, String> carried = BridgeRequests.takeCarry(uniqueId, server, System.currentTimeMillis());
+        BridgeRequests.Carry carried = BridgeRequests.takeCarry(uniqueId, server, System.currentTimeMillis());
         BridgeRequests<ProxyTabPlayer> requests = BridgeRequests.get();
         if (carried != null && requests != null) {
             bridgeConnected = false;
             placeholders.clear();
-            placeholders.putAll(carried);
+            placeholders.putAll(carried.values);
+            // not loaded yet: plain fields, no feature events (a vanished player stays hidden through the reload)
+            vanished = carried.vanished;
+            disguised = carried.disguised;
+            invisibilityPotion = carried.invisible;
+            gamemode = carried.gamemode;
             bridgeRequestTime = System.currentTimeMillis();
             requests.defer(uniqueId, this);
             PatchStats.bridgeCarried.incrementAndGet();
