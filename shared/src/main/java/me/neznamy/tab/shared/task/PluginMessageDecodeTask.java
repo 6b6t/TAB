@@ -39,6 +39,21 @@ public class PluginMessageDecodeTask implements Runnable {
     /** Received bytes */
     private final byte[] bytes;
 
+    /** [6b6t patch 6b6t.8] Server the message came from, {@code null} if unknown */
+    @org.jetbrains.annotations.Nullable private final String sourceServer;
+
+    /**
+     * Creates a task for a message of unknown origin.
+     *
+     * @param   playerId
+     *          player the message is about
+     * @param   bytes
+     *          message
+     */
+    public PluginMessageDecodeTask(UUID playerId, byte[] bytes) {
+        this(playerId, bytes, null);
+    }
+
     @Override
     public void run() {
         ProxyTabPlayer player = (ProxyTabPlayer) TAB.getInstance().getPlayer(playerId);
@@ -47,6 +62,7 @@ public class PluginMessageDecodeTask implements Runnable {
         Supplier<IncomingMessage> supplier = registeredMessages[in.readByte()];
         IncomingMessage msg = supplier.get();
         msg.read(in);
+        if (msg instanceof PlayerJoinResponse) ((PlayerJoinResponse) msg).setSourceServer(sourceServer); // [6b6t patch 6b6t.8]
         TAB.getInstance().getCpu().runMeasuredTask("Plugin message handling", CpuUsageCategory.PLUGIN_MESSAGE_PROCESS, new PluginMessageProcessTask(msg, player));
     }
 }

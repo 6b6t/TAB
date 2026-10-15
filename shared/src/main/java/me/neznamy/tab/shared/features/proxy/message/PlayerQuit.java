@@ -67,5 +67,9 @@ public class PlayerQuit extends ProxyMessage {
         }
         TAB.getInstance().getFeatureManager().onQuit(target);
         proxySupport.getProxyPlayers().remove(target.getUniqueId(), target);
+        // [6b6t patch 6b6t.8] forget the relational values local viewers had for him (unless he is local now)
+        if (TAB.getInstance().getPlayer(target.getUniqueId()) == null) {
+            me.neznamy.tab.shared.proxy.RemoteRelational.forget(target.getName());
+        }
     }
 }

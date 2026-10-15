@@ -61,6 +61,24 @@ public final class PatchStats {
     /** [6b6t patch 6b6t.7] Global playerlist entries put back after a foreign remove deleted them for a viewer */
     public static final AtomicLong entryReadded = new AtomicLong();
 
+    /** [6b6t patch 6b6t.8] Bridge requests sent again because the backend did not answer in time */
+    public static final AtomicLong bridgeRetried = new AtomicLong();
+
+    /** Players whose bridge answered only after at least one retry */
+    public static final AtomicLong bridgeRecovered = new AtomicLong();
+
+    /** Players still without a bridge answer after the last retry */
+    public static final AtomicLong bridgeGaveUp = new AtomicLong();
+
+    /** Bridge requests sent by /btab bridgeresync */
+    public static final AtomicLong bridgeResync = new AtomicLong();
+
+    /** Players who kept their bridge values through a TAB reload */
+    public static final AtomicLong bridgeCarried = new AtomicLong();
+
+    /** Formats sent to the other proxy with unanswered backend placeholders removed */
+    public static final AtomicLong bridgeRawStripped = new AtomicLong();
+
     private static final Map<String, AtomicLong> ALL = new LinkedHashMap<>();
     private static final Map<String, Long> LAST = new LinkedHashMap<>();
 
@@ -78,6 +96,12 @@ public final class PatchStats {
         ALL.put("resync-requested", resyncRequested);
         ALL.put("load-entries-skipped", loadEntriesSkipped);
         ALL.put("entry-readded", entryReadded);
+        ALL.put("bridge-retried", bridgeRetried);
+        ALL.put("bridge-recovered", bridgeRecovered);
+        ALL.put("bridge-gaveup", bridgeGaveUp);
+        ALL.put("bridge-resync", bridgeResync);
+        ALL.put("bridge-carried", bridgeCarried);
+        ALL.put("bridge-raw-stripped", bridgeRawStripped);
         ALL.put("ghosts-removed", ghostsRemoved);
         ALL.put("log-rotations", logRotations);
     }

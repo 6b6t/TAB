@@ -61,6 +61,27 @@ public final class PatchSettings {
     /** Put back a global playerlist entry that a foreign remove (e.g. the backend's late remove) deleted (6b6t.7) */
     public final boolean entryReadd;
 
+    /** Ask the backend bridge again when it did not answer a request for a player's values (6b6t.8) */
+    public final boolean bridgeRetry;
+
+    /** How long to wait for the bridge's answer before asking again (doubles after every retry) */
+    public final long bridgeRetryTimeoutMillis;
+
+    /** Retries per request, 0 = only watch */
+    public final int bridgeRetryMax;
+
+    /** Budget for re-sent / deferred bridge requests (retries, bridgeresync, reload), per second, for the whole proxy */
+    public final int bridgeRequestsPerSecond;
+
+    /** Keep a player's bridge values across a TAB reload and send the reload's requests in staggered batches */
+    public final boolean bridgeReloadCarry;
+
+    /** Remove backend placeholders that never got a value from formats sent to the other proxy */
+    public final boolean bridgeRawStrip;
+
+    /** Fill relational placeholders in formats of the other proxy's players per viewer (false = always empty) */
+    public final boolean remoteRelational;
+
     private PatchSettings(@NotNull Properties p, @NotNull List<String> warnings) {
         staleGuard = bool(p, "stale-guard", true, warnings);
         tombstoneTtlMillis = 1000L * integer(p, "tombstone-ttl-seconds", 120, 5, 3600, warnings);
@@ -74,6 +95,13 @@ public final class PatchSettings {
         statsIntervalMinutes = integer(p, "stats-interval-minutes", 5, 0, 1440, warnings);
         botTabFilter = bool(p, "bot-tab-filter", true, warnings);
         entryReadd = bool(p, "entry-readd", true, warnings);
+        bridgeRetry = bool(p, "bridge-retry", true, warnings);
+        bridgeRetryTimeoutMillis = 1000L * integer(p, "bridge-retry-timeout-seconds", 10, 2, 120, warnings);
+        bridgeRetryMax = integer(p, "bridge-retry-max", 3, 0, 10, warnings);
+        bridgeRequestsPerSecond = integer(p, "bridge-requests-per-second", 40, 1, 500, warnings);
+        bridgeReloadCarry = bool(p, "bridge-reload-carry", true, warnings);
+        bridgeRawStrip = bool(p, "bridge-raw-strip", true, warnings);
+        remoteRelational = bool(p, "remote-relational", true, warnings);
     }
 
     /**

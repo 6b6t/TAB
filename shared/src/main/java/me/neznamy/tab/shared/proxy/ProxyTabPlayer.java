@@ -6,7 +6,11 @@ import me.neznamy.tab.api.integration.VanishIntegration;
 import me.neznamy.tab.api.placeholder.PlayerPlaceholder;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.TabConstants;
+import me.neznamy.tab.shared.chat.TabTextColor;
+import me.neznamy.tab.shared.chat.component.TabTextComponent;
 import me.neznamy.tab.shared.cpu.CpuManager;
+import me.neznamy.tab.shared.patch6b6t.BridgeRequests;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import me.neznamy.tab.shared.proxy.message.outgoing.OutgoingMessage;
 import me.neznamy.tab.shared.proxy.message.outgoing.PermissionRequest;
@@ -19,6 +23,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Abstract class for player on proxy containing variables and methods
@@ -48,8 +53,14 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     /** Map of player's requested permissions */
     private final Map<String, Boolean> permissions = new HashMap<>();
 
-    /** Map of placeholders sent by the bridge */
-    private final Map<String, String> placeholders = new HashMap<>();
+    /** Map of placeholders sent by the bridge ([6b6t patch 6b6t.8] concurrent: also read when formats are sent to the other proxy) */
+    private final Map<String, String> placeholders = new ConcurrentHashMap<>();
+
+    /**
+     * [6b6t patch 6b6t.8] Relational values the bridge of this player's server sent for players of the other proxy:
+     * identifier -> lower-case target name -> value. Local players keep theirs in {@code lastRelationalValues}.
+     */
+    private final Map<String, Map<String, String>> remoteRelational = new ConcurrentHashMap<>();
 
     /** View distance of this player's belowname */
     @Nullable
@@ -75,7 +86,20 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     protected ProxyTabPlayer(@NotNull ProxyPlatform platform, @NotNull Object player, @NotNull UUID uniqueId,
                              @NotNull String name, @NotNull String server, int protocolVersion) {
         super(platform, player, uniqueId, name, server, "N/A", protocolVersion, TAB.getInstance().getConfiguration().getConfig().isOnlineUuidInTabList());
-        sendJoinPluginMessage();
+        // [6b6t patch 6b6t.8] After a reload keep the values of the old copy of this player (same server) and send the
+        // request in the reload's staggered batches; otherwise ask the bridge right away as before.
+        Map<String, String> carried = BridgeRequests.takeCarry(uniqueId, server, System.currentTimeMillis());
+        BridgeRequests<ProxyTabPlayer> requests = BridgeRequests.get();
+        if (carried != null && requests != null) {
+            bridgeConnected = false;
+            placeholders.clear();
+            placeholders.putAll(carried);
+            bridgeRequestTime = System.currentTimeMillis();
+            requests.defer(uniqueId, this);
+            PatchStats.bridgeCarried.incrementAndGet();
+        } else {
+            sendJoinPluginMessage();
+        }
     }
 
     @Override
@@ -91,6 +115,22 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     public void sendJoinPluginMessage() {
         bridgeConnected = false; // Reset on server switch
         placeholders.clear();
+        sendBridgeRequest();
+        // [6b6t patch 6b6t.8] ask again if this request gets no answer
+        BridgeRequests<ProxyTabPlayer> requests = BridgeRequests.get();
+        if (requests != null) requests.requestSent(getUniqueId(), this, server == null ? null : server.getName());
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Sends the same request again (retry, {@code /btab bridgeresync}, reload batch) without wiping
+     * the values this proxy already has, so nothing goes raw while the bridge answers.
+     */
+    public void resendJoinPluginMessage() {
+        bridgeConnected = false;
+        sendBridgeRequest();
+    }
+
+    private void sendBridgeRequest() {
         sendPluginMessage(new PlayerJoin(
                 TAB.getInstance().getGroupManager().getPermissionPlugin().contains("Vault") &&
                     !TAB.getInstance().getConfiguration().getConfig().isGroupsByPermissions(),
@@ -100,6 +140,37 @@ public abstract class ProxyTabPlayer extends TabPlayer {
         expansionData.resendAllValues();
         bridgeRequestTime = System.currentTimeMillis();
     }
+
+    /**
+     * [6b6t patch 6b6t.8] Production access for {@link BridgeRequests}.
+     */
+    public static final BridgeRequests.Port<ProxyTabPlayer> BRIDGE_PORT = new BridgeRequests.Port<ProxyTabPlayer>() {
+
+        @Override
+        public boolean isCurrent(@NotNull ProxyTabPlayer player) {
+            return player.isOnline() && TAB.getInstance().getPlayer(player.getUniqueId()) == player;
+        }
+
+        @Override
+        public String currentServer(@NotNull ProxyTabPlayer player) {
+            return player.server == null ? null : player.server.getName();
+        }
+
+        @Override
+        public boolean isAnswered(@NotNull ProxyTabPlayer player) {
+            return player.isBridgeConnected();
+        }
+
+        @Override
+        public void send(@NotNull ProxyTabPlayer player) {
+            player.resendJoinPluginMessage();
+        }
+
+        @Override
+        public void log(@NotNull String line) {
+            TAB.getInstance().getPlatform().logInfo(new TabTextComponent(line, (TabTextColor) null));
+        }
+    };
 
     /**
      * Sets permission presence status to provided value

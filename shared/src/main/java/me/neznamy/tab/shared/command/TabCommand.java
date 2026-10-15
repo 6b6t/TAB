@@ -24,6 +24,7 @@ public class TabCommand extends SubCommand {
     public TabCommand() {
         super(null, null);
         registerSubCommand(new BossBarCommand());
+        registerSubCommand(new BridgeResyncCommand()); // [6b6t patch 6b6t.8]
         registerSubCommand(new CpuCommand());
         registerSubCommand(new DebugCommand());
         registerSubCommand(new DumpCommand());
