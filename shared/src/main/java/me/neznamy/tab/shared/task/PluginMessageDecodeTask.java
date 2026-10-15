@@ -63,6 +63,6 @@ public class PluginMessageDecodeTask implements Runnable {
         IncomingMessage msg = supplier.get();
         msg.read(in);
         if (msg instanceof PlayerJoinResponse) ((PlayerJoinResponse) msg).setSourceServer(sourceServer); // [6b6t patch 6b6t.8]
-        TAB.getInstance().getCpu().runMeasuredTask("Plugin message handling", CpuUsageCategory.PLUGIN_MESSAGE_PROCESS, new PluginMessageProcessTask(msg, player));
+        TAB.getInstance().getCpu().runMeasuredTask("Plugin message handling", CpuUsageCategory.PLUGIN_MESSAGE_PROCESS, new PluginMessageProcessTask(msg, player, sourceServer));
     }
 }

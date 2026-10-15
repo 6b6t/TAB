@@ -26,8 +26,10 @@ import java.util.function.Supplier;
  * that may come in large numbers (retries, {@code /btab bridgeresync}, the requests of a reload) through one budget
  * of {@link PatchSettings#bridgeRequestsPerSecond} per second, so 400+ players never hit a backend at once.
  * <p>
- * Retries only go to servers whose bridge has answered at least once since the proxy started (servers without a
- * bridge, like login-server, are never asked again). {@code /btab bridgeresync} always sends.
+ * Servers listed in {@link PatchSettings#bridgeRetrySkipServers} (no bridge: login-server, backup-server) are never asked
+ * again; every other server is, also before its bridge answered anyone (a cold start where the first answers are lost).
+ * The "gave up" console line is only printed for servers whose bridge has answered since the proxy started.
+ * {@code /btab bridgeresync} always sends.
  * <p>
  * {@link #tick()} runs on TAB's processing thread; the other methods may be called from any thread.
  *
@@ -265,14 +267,15 @@ public final class BridgeRequests<P> {
                     pending.remove(id, entry); // the switch sent its own request
                     continue;
                 }
-                if (!s.bridgeRetry || server == null || !answeredServers.contains(server)) {
+                if (!s.bridgeRetry || server == null || s.bridgeRetrySkipServers.contains(server.toLowerCase(java.util.Locale.ROOT))) {
                     pending.remove(id, entry);
                     continue;
                 }
                 if (entry.attempts >= s.bridgeRetryMax) {
                     if (pending.remove(id, entry) && s.bridgeRetryMax > 0) {
                         PatchStats.bridgeGaveUp.incrementAndGet();
-                        gaveUpSinceLog.merge(server, 1, Integer::sum);
+                        // a console line only for servers known to run a bridge (a server without one never answers)
+                        if (answeredServers.contains(server)) gaveUpSinceLog.merge(server, 1, Integer::sum);
                     }
                     continue;
                 }

@@ -141,6 +141,7 @@ public final class RemoteRelational {
      * @return  {@code true} if the value changed
      */
     public static boolean store(@NotNull ProxyTabPlayer viewer, @NotNull String identifier, @NotNull String target, @NotNull String value) {
+        if (!PatchSettings.get().remoteRelational) return false; // switched off: nothing is kept, everything renders empty
         Map<String, String> values = viewer.getRemoteRelational().computeIfAbsent(identifier, i -> new ConcurrentHashMap<>());
         return !value.equals(values.put(target.toLowerCase(Locale.ROOT), value));
     }
@@ -219,19 +220,40 @@ public final class RemoteRelational {
             if (resolve) {
                 RemoteResolver resolver = targetId == null ? null : RESOLVERS.get(identifier);
                 if (resolver != null) value = resolveSafely(resolver, viewer, targetId, target);
-                if (value == null) value = get((ProxyTabPlayer) viewer, identifier, target);
+                // a bridge value only counts while viewer and target are on the same server (the bridge computed it there)
+                if (value == null && sameServer(viewer, targetId)) value = get((ProxyTabPlayer) viewer, identifier, target);
             }
             result = result.replace(identifier, finish(identifier, value));
         }
         return result;
     }
 
+    /**
+     * Returns {@code false} if the viewer and the other proxy's player are known to be on different servers.
+     *
+     * @param   viewer
+     *          viewer
+     * @param   targetId
+     *          other proxy's player, {@code null} if unknown
+     * @return  whether a bridge value for this pair may be shown
+     */
+    private static boolean sameServer(@NotNull TabPlayer viewer, @Nullable UUID targetId) {
+        if (targetId == null || viewer.server == null) return true;
+        ProxyPlayer copy = copyOf(targetId);
+        return copy == null || copy.server == null || copy.server.getName().equals(viewer.server.getName());
+    }
+
+    @Nullable
+    private static ProxyPlayer copyOf(@NotNull UUID targetId) {
+        if (TAB.getInstance().getFeatureManager() == null) return null;
+        ProxySupport proxy = TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PROXY_SUPPORT);
+        return proxy == null ? null : proxy.getProxyPlayers().get(targetId);
+    }
+
     @Nullable
     private static String resolveSafely(@NotNull RemoteResolver resolver, @NotNull TabPlayer viewer, @NotNull UUID targetId, @NotNull String target) {
         try {
-            ProxySupport proxy = TAB.getInstance().getFeatureManager() == null ? null
-                    : TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PROXY_SUPPORT);
-            ProxyPlayer copy = proxy == null ? null : proxy.getProxyPlayers().get(targetId);
+            ProxyPlayer copy = copyOf(targetId);
             return resolver.resolve(viewer, targetId, target, copy == null || copy.server == null ? null : copy.server.getName());
         } catch (Throwable t) {
             return null; // a broken resolver must never break the tab list; the bridge value / empty output is used
@@ -284,7 +306,8 @@ public final class RemoteRelational {
     }
 
     /**
-     * Removes backend placeholders the bridge never gave a value for from text that is sent to the other proxy.
+     * Removes backend placeholders that are still unresolved (no answer yet, or the raw text as value) from text that is
+     * sent to the other proxy.
      * Relational placeholders stay (the receiving proxy fills them in per viewer, see {@link #render}).
      *
      * @param   owner
@@ -298,10 +321,10 @@ public final class RemoteRelational {
         if (!(owner instanceof ProxyTabPlayer) || text.indexOf('%') == -1 || !PatchSettings.get().bridgeRawStrip) return text;
         PlaceholderManagerImpl manager = TAB.getInstance().getPlaceholderManager();
         if (manager == null) return text;
-        Map<String, String> values = ((ProxyTabPlayer) owner).getPlaceholders();
         String result = text;
         for (String identifier : PlaceholderManagerImpl.detectPlaceholders(text)) {
-            if (identifier.startsWith("%rel_") || !manager.getBridgePlaceholders().containsKey(identifier) || values.containsKey(identifier)) continue;
+            // a backend identifier still in the text is unresolved: no answer yet, or the bridge answered with the raw text
+            if (identifier.startsWith("%rel_") || !manager.getBridgePlaceholders().containsKey(identifier)) continue;
             PlaceholderReference reference = manager.getPlaceholderRaw(identifier);
             if (reference != null && !(reference.getHandle() instanceof PlayerPlaceholderImpl)) continue;
             result = result.replace(identifier, "");
