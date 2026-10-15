@@ -17,6 +17,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -37,7 +38,93 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class RemoteRelational {
 
+    /**
+     * [6b6t patch 6b6t.8] Hook for proxy plugins: resolves a relational placeholder for a viewer on this proxy and a
+     * player of the other proxy (who has no TabPlayer here). Register it next to the normal TAB API registration
+     * ({@code TabAPI.getInstance().getPlaceholderManager().registerRelationalPlaceholder(...)}, which serves local
+     * players) with {@link #registerResolver}; call {@link #refreshRemote} / {@link #refreshViewer(TabPlayer)} when the
+     * value may have changed (TAB does not poll other-proxy players).
+     */
+    @FunctionalInterface
+    public interface RemoteResolver {
+
+        /**
+         * Returns the value for this viewer and other-proxy player.
+         *
+         * @param   viewer
+         *          viewer on this proxy
+         * @param   targetId
+         *          UUID of the player of the other proxy
+         * @param   targetName
+         *          his name
+         * @param   targetServer
+         *          his server as the other proxy reported it, {@code null} if not known yet
+         * @return  value (output replacements and colors are applied as for local players), or {@code null} to use the
+         *          value the viewer's bridge sent (else the placeholder's empty output)
+         */
+        @Nullable
+        String resolve(@NotNull me.neznamy.tab.api.TabPlayer viewer, @NotNull UUID targetId, @NotNull String targetName,
+                       @Nullable String targetServer);
+    }
+
+    /** identifier -> resolver; kept through TAB reloads (plugins register once) */
+    private static final Map<String, RemoteResolver> RESOLVERS = new ConcurrentHashMap<>();
+
     private RemoteRelational() {
+    }
+
+    /**
+     * Registers (or replaces) the resolver of a relational placeholder for players of the other proxy.
+     *
+     * @param   identifier
+     *          placeholder identifier, {@code %rel_...%}
+     * @param   resolver
+     *          resolver
+     */
+    public static void registerResolver(@NotNull String identifier, @NotNull RemoteResolver resolver) {
+        if (!identifier.startsWith("%rel_") || !identifier.endsWith("%")) {
+            throw new IllegalArgumentException("Relational placeholder identifiers start with %rel_ and end with % (got " + identifier + ")");
+        }
+        RESOLVERS.put(identifier, resolver);
+        refreshRemote(null);
+    }
+
+    /**
+     * Removes the resolver of a relational placeholder.
+     *
+     * @param   identifier
+     *          placeholder identifier
+     */
+    public static void unregisterResolver(@NotNull String identifier) {
+        if (RESOLVERS.remove(identifier) != null) refreshRemote(null);
+    }
+
+    /**
+     * Shows the current value of every relational placeholder in the format of a player of the other proxy to every
+     * viewer on this proxy (e.g. after his seal changed). Runs on TAB's processing thread.
+     *
+     * @param   targetId
+     *          UUID of the player of the other proxy, {@code null} = all of them
+     */
+    public static void refreshRemote(@Nullable UUID targetId) {
+        TAB tab = TAB.getInstance();
+        if (tab == null || tab.isPluginDisabled() || tab.getCPUManager() == null) return;
+        tab.getCPUManager().runTask(() -> {
+            for (TabPlayer viewer : TAB.getInstance().getOnlinePlayers()) refreshViewer(viewer, null, targetId);
+        });
+    }
+
+    /**
+     * Shows one viewer the current relational values of every player of the other proxy (e.g. after the viewer's client
+     * capabilities became known). Runs on TAB's processing thread.
+     *
+     * @param   viewer
+     *          viewer on this proxy
+     */
+    public static void refreshViewer(@NotNull TabPlayer viewer) {
+        TAB tab = TAB.getInstance();
+        if (tab == null || tab.isPluginDisabled() || tab.getCPUManager() == null) return;
+        tab.getCPUManager().runTask(() -> refreshViewer(viewer, null, null));
     }
 
     /**
@@ -104,15 +191,51 @@ public final class RemoteRelational {
      */
     @NotNull
     public static String render(@NotNull String text, @Nullable TabPlayer viewer, @NotNull String target) {
+        return render(text, viewer, null, target);
+    }
+
+    /**
+     * Fills in the relational placeholders of a format of the other proxy's player for one viewer: a registered
+     * {@link RemoteResolver} first, else the value the viewer's bridge sent, else the placeholder's empty output.
+     *
+     * @param   text
+     *          format text as received (prefix + name + suffix)
+     * @param   viewer
+     *          viewer, {@code null} = no viewer (every relational placeholder gets its empty output)
+     * @param   targetId
+     *          UUID of the player the format belongs to, {@code null} if unknown (no resolver is asked)
+     * @param   target
+     *          name of the player the format belongs to
+     * @return  text with every relational placeholder replaced
+     */
+    @NotNull
+    public static String render(@NotNull String text, @Nullable TabPlayer viewer, @Nullable UUID targetId, @NotNull String target) {
         if (!text.contains("%rel_")) return text;
         boolean resolve = viewer instanceof ProxyTabPlayer && PatchSettings.get().remoteRelational;
         String result = text;
         for (String identifier : PlaceholderManagerImpl.detectPlaceholders(text)) {
             if (!identifier.startsWith("%rel_")) continue;
-            String value = resolve ? get((ProxyTabPlayer) viewer, identifier, target) : null;
+            String value = null;
+            if (resolve) {
+                RemoteResolver resolver = targetId == null ? null : RESOLVERS.get(identifier);
+                if (resolver != null) value = resolveSafely(resolver, viewer, targetId, target);
+                if (value == null) value = get((ProxyTabPlayer) viewer, identifier, target);
+            }
             result = result.replace(identifier, finish(identifier, value));
         }
         return result;
+    }
+
+    @Nullable
+    private static String resolveSafely(@NotNull RemoteResolver resolver, @NotNull TabPlayer viewer, @NotNull UUID targetId, @NotNull String target) {
+        try {
+            ProxySupport proxy = TAB.getInstance().getFeatureManager() == null ? null
+                    : TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PROXY_SUPPORT);
+            ProxyPlayer copy = proxy == null ? null : proxy.getProxyPlayers().get(targetId);
+            return resolver.resolve(viewer, targetId, target, copy == null || copy.server == null ? null : copy.server.getName());
+        } catch (Throwable t) {
+            return null; // a broken resolver must never break the tab list; the bridge value / empty output is used
+        }
     }
 
     /**
@@ -146,10 +269,15 @@ public final class RemoteRelational {
      *          name of the target whose value changed, {@code null} = every player of the other proxy
      */
     public static void refreshViewer(@NotNull TabPlayer viewer, @Nullable String target) {
+        refreshViewer(viewer, target, null);
+    }
+
+    private static void refreshViewer(@NotNull TabPlayer viewer, @Nullable String target, @Nullable UUID targetId) {
         ProxySupport proxy = TAB.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PROXY_SUPPORT);
         if (proxy == null || !TAB.getInstance().getFeatureManager().isFeatureEnabled(TabConstants.Feature.PLAYER_LIST)) return;
         for (ProxyPlayer player : proxy.getProxyPlayers().values()) {
             if (target != null && !player.getName().equalsIgnoreCase(target)) continue;
+            if (targetId != null && !player.getUniqueId().equals(targetId)) continue;
             if (player.isVanished() || player.getTabFormat() == null || !player.getTabFormat().isRelational()) continue;
             viewer.getTabList().updateDisplayName(player.getTablistId(), player.getTabFormat().getFormatComponent(viewer));
         }

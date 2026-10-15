@@ -198,6 +198,32 @@ class BridgeProxyTest {
         assertEquals("§cX§7Remote1", RemoteRelational.render("%rel_other%§7Remote1", viewer, "Remote1"));
     }
 
+    @Test void proxyPluginResolverServesOtherProxyPlayersFirst() throws Exception {
+        Fake viewer = player("Viewer", "worker-0");
+        online(viewer);
+        UUID remote = UUID.nameUUIDFromBytes("Remote1".getBytes());
+        RemoteRelational.store(viewer, SEAL, "Remote1", "gold"); // what the viewer's bridge sent
+        List<String> asked = new ArrayList<>();
+        try {
+            RemoteRelational.registerResolver(SEAL, (v, id, name, server) -> {
+                asked.add(v.getName() + "/" + id + "/" + name + "/" + server);
+                return name.equals("Remote1") ? "&d*" : null;
+            });
+            assertEquals("§d*§7Remote1", RemoteRelational.render(SEAL + "§7Remote1", viewer, remote, "Remote1"), "resolver wins");
+            assertEquals("Viewer/" + remote + "/Remote1/null", asked.get(0));
+            UUID other = UUID.randomUUID();
+            RemoteRelational.store(viewer, SEAL, "Remote2", "gold");
+            assertTrue(RemoteRelational.render(SEAL + "§7Remote2", viewer, other, "Remote2").contains("✦"), "null = bridge value");
+            assertEquals("§7Remote3", RemoteRelational.render(SEAL + "§7Remote3", viewer, UUID.randomUUID(), "Remote3"), "neither = empty");
+            RemoteRelational.registerResolver(SEAL, (v, id, name, server) -> { throw new IllegalStateException("broken plugin"); });
+            assertTrue(RemoteRelational.render(SEAL + "§7Remote1", viewer, remote, "Remote1").contains("✦"), "a throwing resolver falls back");
+            assertThrows(IllegalArgumentException.class, () -> RemoteRelational.registerResolver("%seal%", (v, id, n, srv) -> "x"));
+        } finally {
+            RemoteRelational.unregisterResolver(SEAL);
+        }
+        assertTrue(RemoteRelational.render(SEAL + "§7Remote1", viewer, remote, "Remote1").contains("✦"), "unregistered = bridge value");
+    }
+
     @Test void localTargetsKeepTheUpstreamPath() throws Exception {
         Fake viewer = player("Viewer", "worker-2"), local = player("Local1", "worker-2");
         online(viewer, local);

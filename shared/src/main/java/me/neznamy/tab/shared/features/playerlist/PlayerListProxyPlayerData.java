@@ -93,7 +93,7 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
     @NotNull
     public TabComponent getFormatComponent(@Nullable TabPlayer viewer) {
         if (!isRelational()) return formatComponent;
-        return feature.getCache().get(RemoteRelational.render(prefix + name + suffix, viewer, player));
+        return feature.getCache().get(RemoteRelational.render(prefix + name + suffix, viewer, playerId, player));
     }
 
     /**
