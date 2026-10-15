@@ -7,6 +7,7 @@ import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.placeholders.PlaceholderReference;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import me.neznamy.tab.shared.proxy.ProxyTabPlayer;
+import me.neznamy.tab.shared.proxy.RemoteRelational;
 import org.jetbrains.annotations.NotNull;
 
 public class UpdatePlaceholder implements IncomingMessage {
@@ -36,6 +37,9 @@ public class UpdatePlaceholder implements IncomingMessage {
             TabPlayer other = TAB.getInstance().getPlayer(target);
             if (other != null) { // Backend player did not connect via this proxy if null
                 ((RelationalPlaceholder)placeholder.getHandle()).updateValue(player, other, value);
+            } else if (RemoteRelational.store(player, identifier, target, value)) {
+                // [6b6t patch 6b6t.8] player of the other proxy on the same server: update how this viewer sees him
+                RemoteRelational.refreshViewer(player, target);
             }
         } else if (placeholder.getHandle() instanceof PlayerPlaceholder) {
             ((PlayerPlaceholder)placeholder.getHandle()).updateValue(player, value);

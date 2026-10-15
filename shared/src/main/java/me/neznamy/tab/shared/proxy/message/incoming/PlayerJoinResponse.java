@@ -8,7 +8,9 @@ import me.neznamy.tab.shared.data.World;
 import me.neznamy.tab.shared.placeholders.PlaceholderReference;
 import me.neznamy.tab.shared.placeholders.types.PlayerPlaceholderImpl;
 import me.neznamy.tab.shared.platform.TabPlayer;
+import me.neznamy.tab.shared.patch6b6t.BridgeRequests;
 import me.neznamy.tab.shared.proxy.ProxyTabPlayer;
+import me.neznamy.tab.shared.proxy.RemoteRelational;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.HashMap;
@@ -20,6 +22,19 @@ public class PlayerJoinResponse implements IncomingMessage {
     private String group;
     private Map<String, Object> placeholders;
     private int gameMode;
+
+    /** [6b6t patch 6b6t.8] Server the answer came from, {@code null} if the platform does not say */
+    @org.jetbrains.annotations.Nullable private String sourceServer;
+
+    /**
+     * [6b6t patch 6b6t.8] Sets the server the answer came from.
+     *
+     * @param   sourceServer
+     *          server name
+     */
+    public void setSourceServer(@org.jetbrains.annotations.Nullable String sourceServer) {
+        this.sourceServer = sourceServer;
+    }
 
     @Override
     public void read(@NotNull ByteArrayDataInput in) {
@@ -60,6 +75,7 @@ public class PlayerJoinResponse implements IncomingMessage {
         player.setDisguised(false);
         player.setInvisibilityPotion(false);
         Map<PlayerPlaceholderImpl, String> playerPlaceholderUpdates = new HashMap<>();
+        boolean remoteRelationalChanged = false; // [6b6t patch 6b6t.8]
         for (Map.Entry<String, Object> entry : placeholders.entrySet()) {
             player.getPlaceholders().put(entry.getKey(), entry.getValue().toString());
             String identifier = entry.getKey();
@@ -78,6 +94,9 @@ public class PlayerJoinResponse implements IncomingMessage {
                     TabPlayer other = TAB.getInstance().getPlayer(entry2.getKey());
                     if (other != null) { // Backend player did not connect via this proxy if null
                         rel.updateValue(player, other, entry2.getValue());
+                    } else if (RemoteRelational.store(player, identifier, entry2.getKey(), entry2.getValue())) {
+                        // [6b6t patch 6b6t.8] player of the other proxy on the same server: kept for his format here
+                        remoteRelationalChanged = true;
                     }
                 }
             } else {
@@ -91,5 +110,9 @@ public class PlayerJoinResponse implements IncomingMessage {
         PlayerPlaceholderImpl.bulkUpdateValues(player, playerPlaceholderUpdates);
         player.setGamemode(gameMode);
         player.setBridgeConnected(true);
+        // [6b6t patch 6b6t.8] stop waiting for this answer; show the relational values of the other proxy's players
+        BridgeRequests<ProxyTabPlayer> requests = BridgeRequests.get();
+        if (requests != null) requests.answered(player.getUniqueId(), player, sourceServer);
+        if (remoteRelationalChanged) RemoteRelational.refreshViewer(player, null);
     }
 }

@@ -6,6 +6,7 @@ import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.event.player.ServerPostConnectEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ServerConnection;
 import me.neznamy.tab.shared.ProtocolVersion;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.TabConstants;
@@ -102,7 +103,9 @@ public class VelocityEventListener implements EventListener<Player> {
         e.setResult(PluginMessageEvent.ForwardResult.handled()); // Also cancel messages from players to prevent exploits
         if (TAB.getInstance().isPluginDisabled()) return;
         if (e.getTarget() instanceof Player) {
-            pluginMessage(((Player) e.getTarget()).getUniqueId(), e.getData());
+            // [6b6t patch 6b6t.8] remember the backend the answer came from (late answers of the previous server)
+            String source = e.getSource() instanceof ServerConnection ? ((ServerConnection) e.getSource()).getServerInfo().getName() : null;
+            pluginMessage(((Player) e.getTarget()).getUniqueId(), e.getData(), source);
         }
     }
 

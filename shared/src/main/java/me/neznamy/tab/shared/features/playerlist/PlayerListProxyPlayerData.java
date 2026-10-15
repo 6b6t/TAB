@@ -12,7 +12,9 @@ import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.proxy.QueuedData;
 import me.neznamy.tab.shared.features.proxy.message.ProxyMessage;
 import me.neznamy.tab.shared.platform.TabPlayer;
+import me.neznamy.tab.shared.proxy.RemoteRelational;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.UUID;
 
@@ -69,6 +71,40 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
         suffix = in.readUTF();
         formatComponent = feature.getCache().get(prefix + name + suffix);
         disabled = in.readBoolean();
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Whether the format contains relational placeholders, which are filled in per viewer.
+     *
+     * @return  {@code true} if the format needs a viewer
+     */
+    public boolean isRelational() {
+        return prefix.contains("%rel_") || name.contains("%rel_") || suffix.contains("%rel_");
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Format as this viewer sees it. Upstream showed relational placeholders raw to every viewer
+     * on this proxy; they are now filled in with the values the viewer's bridge sent (see {@link RemoteRelational}).
+     *
+     * @param   viewer
+     *          viewer, {@code null} = no viewer (relational placeholders get their empty output)
+     * @return  format component
+     */
+    @NotNull
+    public TabComponent getFormatComponent(@Nullable TabPlayer viewer) {
+        if (!isRelational()) return formatComponent;
+        return feature.getCache().get(RemoteRelational.render(prefix + name + suffix, viewer, player));
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Viewer-independent format; relational placeholders never show raw.
+     * Callers that know the viewer use {@link #getFormatComponent(TabPlayer)}.
+     *
+     * @return  format component
+     */
+    @NotNull
+    public TabComponent getFormatComponent() {
+        return getFormatComponent(null);
     }
 
     @Override

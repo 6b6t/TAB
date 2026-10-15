@@ -140,7 +140,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         if (proxy != null) {
             for (ProxyPlayer proxied : proxy.getProxyPlayers().values()) {
                 if (proxied.server != connectedPlayer.server && shouldSee(connectedPlayer, proxied)) {
-                    connectedPlayer.getTabList().addEntry(proxied.asEntry());
+                    connectedPlayer.getTabList().addEntry(proxied.asEntry(connectedPlayer));
                 }
             }
         }
@@ -186,7 +186,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         if (proxy != null) {
             for (ProxyPlayer proxied : proxy.getProxyPlayers().values()) {
                 if (proxied.server != player.server && shouldSee(player, proxied)) {
-                    player.getTabList().addEntry(proxied.asEntry());
+                    player.getTabList().addEntry(proxied.asEntry(player));
                 }
             }
         }
@@ -281,7 +281,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
     public void onJoin(@NotNull ProxyPlayer player) {
         for (TabPlayer viewer : onlinePlayers.getPlayers()) {
             if (shouldSee(viewer, player) && viewer.server != player.server) {
-                viewer.getTabList().addEntry(player.asEntry());
+                viewer.getTabList().addEntry(player.asEntry(viewer));
             }
         }
     }
@@ -291,7 +291,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         for (TabPlayer viewer : onlinePlayers.getPlayers()) {
             if (viewer.server == player.server) continue;
             if (shouldSee(viewer, player)) {
-                viewer.getTabList().addEntry(player.asEntry());
+                viewer.getTabList().addEntry(player.asEntry(viewer));
             } else {
                 viewer.getTabList().removeEntry(player.getTablistId());
             }
@@ -310,7 +310,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         customThread.execute(new TimedCaughtTask(TAB.getInstance().getCpu(), () -> {
             if (player.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED) return;
             for (TabPlayer viewer : onlinePlayers.getPlayers()) {
-                if (viewer.server == player.server && shouldSee(viewer, player)) viewer.getTabList().addEntry(player.asEntry());
+                if (viewer.server == player.server && shouldSee(viewer, player)) viewer.getTabList().addEntry(player.asEntry(viewer));
             }
         }, getFeatureName(), "6b6t entry restore"));
     }
@@ -391,7 +391,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
             ProxyPlayer copy = proxy.getProxyPlayers().get(id);
             if (copy == null || copy.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED
                     || copy.server == viewer.server || !shouldSee(viewer, copy)) return;
-            entry = copy.asEntry();
+            entry = copy.asEntry(viewer);
         }
         if (!readdLimiter.tryAcquire(viewer.getUniqueId(), id, System.currentTimeMillis())) {
             TAB.getInstance().debug("[TAB-6b6t] Not putting back entry " + id + " for " + viewer.getName() + " again (removed too often)");
@@ -423,7 +423,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         } else {
             for (TabPlayer viewer : onlinePlayers.getPlayers()) {
                 if (shouldSee(viewer, player)) {
-                    viewer.getTabList().addEntry(player.asEntry());
+                    viewer.getTabList().addEntry(player.asEntry(viewer));
                 }
             }
         }
@@ -554,7 +554,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
             if (viewer.server == target.server || !viewer.botFlags.hidesBots()) continue;
             BotTabFilter.Action action = botFilter.afterChange(true, bot, shouldSee(viewer, target));
             if (action == BotTabFilter.Action.REMOVE) viewer.getTabList().removeEntry(target.getTablistId());
-            else if (action == BotTabFilter.Action.ADD) viewer.getTabList().addEntry(target.asEntry());
+            else if (action == BotTabFilter.Action.ADD) viewer.getTabList().addEntry(target.asEntry(viewer));
         }
     }
 
@@ -565,7 +565,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
 
     private void apply(@NotNull TabPlayer viewer, @NotNull ProxyPlayer target, @NotNull BotTabFilter.Action action) {
         if (action == BotTabFilter.Action.REMOVE) viewer.getTabList().removeEntry(target.getTablistId());
-        else if (action == BotTabFilter.Action.ADD) viewer.getTabList().addEntry(target.asEntry());
+        else if (action == BotTabFilter.Action.ADD) viewer.getTabList().addEntry(target.asEntry(viewer));
     }
 
     /**

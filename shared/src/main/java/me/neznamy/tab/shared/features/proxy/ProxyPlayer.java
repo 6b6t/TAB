@@ -118,7 +118,20 @@ public class ProxyPlayer {
      */
     @NotNull
     public TabList.Entry asEntry() {
-        return new TabList.Entry(uniqueId, nickname, skin, true, 0, 0, tabFormat == null ? null : tabFormat.getFormatComponent(), 0, true);
+        return asEntry(null);
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Creates a new entry for this player as the viewer sees it (relational placeholders of the
+     * format filled in for that viewer).
+     *
+     * @param   viewer
+     *          viewer the entry is for, {@code null} if unknown
+     * @return  TabList.Entry representing this player
+     */
+    @NotNull
+    public TabList.Entry asEntry(@Nullable me.neznamy.tab.shared.platform.TabPlayer viewer) {
+        return new TabList.Entry(uniqueId, nickname, skin, true, 0, 0, tabFormat == null ? null : tabFormat.getFormatComponent(viewer), 0, true);
     }
 
     /**

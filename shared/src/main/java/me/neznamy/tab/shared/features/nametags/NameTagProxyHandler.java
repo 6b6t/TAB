@@ -26,8 +26,11 @@ public class NameTagProxyHandler implements ProxyFeature {
                     feature.getProxy().getIdCounter().incrementAndGet(),
                     player.getUniqueId(),
                     player.teamData.teamName,
-                    player.teamData.prefix.get(),
-                    player.teamData.suffix.get(),
+                    // [6b6t patch 6b6t.8] never send raw backend or relational placeholders (teams are not per viewer there)
+                    me.neznamy.tab.shared.proxy.RemoteRelational.withoutRelational(
+                            me.neznamy.tab.shared.proxy.RemoteRelational.stripUnanswered(player, player.teamData.prefix.get())),
+                    me.neznamy.tab.shared.proxy.RemoteRelational.withoutRelational(
+                            me.neznamy.tab.shared.proxy.RemoteRelational.stripUnanswered(player, player.teamData.suffix.get())),
                     player.teamData.getTeamVisibility(player) ? Scoreboard.NameVisibility.ALWAYS : Scoreboard.NameVisibility.NEVER,
                     player.teamData.isDisabled()
             ));

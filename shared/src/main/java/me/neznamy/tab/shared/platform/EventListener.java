@@ -64,7 +64,21 @@ public interface EventListener<T> {
      *          The message
      */
     default void pluginMessage(@NotNull UUID player, byte[] message) {
-        TAB.getInstance().getCpu().getPluginMessageDecodeThread().execute(new TimedCaughtTask(TAB.getInstance().getCpu(), new PluginMessageDecodeTask(player, message),
+        pluginMessage(player, message, null);
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Processes plugin message and remembers the server it came from.
+     *
+     * @param   player
+     *          UUID of player who received message
+     * @param   message
+     *          The message
+     * @param   sourceServer
+     *          Server the message came from, {@code null} if unknown
+     */
+    default void pluginMessage(@NotNull UUID player, byte[] message, @org.jetbrains.annotations.Nullable String sourceServer) {
+        TAB.getInstance().getCpu().getPluginMessageDecodeThread().execute(new TimedCaughtTask(TAB.getInstance().getCpu(), new PluginMessageDecodeTask(player, message, sourceServer),
                 "Plugin message handling", CpuUsageCategory.PLUGIN_MESSAGE_DECODE));
     }
 
