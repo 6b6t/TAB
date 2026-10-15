@@ -210,11 +210,11 @@ public class TAB extends TabAPI {
             me.neznamy.tab.shared.patch6b6t.BridgeRequests<me.neznamy.tab.shared.proxy.ProxyTabPlayer> bridgeRequests =
                     platform instanceof me.neznamy.tab.shared.proxy.ProxyPlatform
                             ? me.neznamy.tab.shared.patch6b6t.BridgeRequests.begin(me.neznamy.tab.shared.proxy.ProxyTabPlayer.BRIDGE_PORT) : null;
+            startPatchStatsLine(); // [6b6t patch] before the players, so the line counts what their load does (bridge-carried)
             platform.loadPlayers();
             if (bridgeRequests != null) me.neznamy.tab.shared.proxy.BridgeCarry.applyCarriedValues();
             command = new TabCommand();
             featureManager.load();
-            startPatchStatsLine();
             for (TabPlayer p : onlinePlayers) p.markAsLoaded(false);
             if (eventBus != null) eventBus.fire(TabLoadEventImpl.getInstance());
             cpu.enable();

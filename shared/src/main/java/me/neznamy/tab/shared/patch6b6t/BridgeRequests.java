@@ -318,15 +318,26 @@ public final class BridgeRequests<P> {
     /** Bridge values of the players online at the last unload: UUID -> carry */
     private static final Map<UUID, Carry> CARRY = new ConcurrentHashMap<>();
 
-    /** Values of one player at unload */
-    static final class Carry {
+    /** Bridge state of one player at unload */
+    public static final class Carry {
         final String server;
-        final Map<String, String> values;
+        /** Placeholder values (identifier -> value), relational ones excluded */
+        public final Map<String, String> values;
+        /** Vanish / disguise / invisibility potion / game mode as the bridge last reported them */
+        public final boolean vanished;
+        public final boolean disguised;
+        public final boolean invisible;
+        public final int gamemode;
         final long takenAt;
 
-        Carry(@NotNull String server, @NotNull Map<String, String> values, long takenAt) {
+        Carry(@NotNull String server, @NotNull Map<String, String> values, boolean vanished, boolean disguised,
+              boolean invisible, int gamemode, long takenAt) {
             this.server = server;
             this.values = values;
+            this.vanished = vanished;
+            this.disguised = disguised;
+            this.invisible = invisible;
+            this.gamemode = gamemode;
             this.takenAt = takenAt;
         }
     }
@@ -345,17 +356,42 @@ public final class BridgeRequests<P> {
      *          current time
      */
     public static void carry(@NotNull UUID id, @Nullable String server, @NotNull Map<String, String> values, long now) {
+        carry(id, server, values, false, false, false, 0, now);
+    }
+
+    /**
+     * Remembers a player's bridge state at unload (values and the flags the bridge reported).
+     *
+     * @param   id
+     *          player UUID
+     * @param   server
+     *          server the state came from
+     * @param   values
+     *          the player's bridge values
+     * @param   vanished
+     *          vanish status from the bridge
+     * @param   disguised
+     *          disguise status from the bridge
+     * @param   invisible
+     *          invisibility potion status from the bridge
+     * @param   gamemode
+     *          game mode from the bridge
+     * @param   now
+     *          current time
+     */
+    public static void carry(@NotNull UUID id, @Nullable String server, @NotNull Map<String, String> values, boolean vanished,
+                             boolean disguised, boolean invisible, int gamemode, long now) {
         if (server == null) return;
         Map<String, String> copy = new HashMap<>();
         for (Map.Entry<String, String> e : values.entrySet()) {
             if (e.getKey() == null || e.getValue() == null || e.getKey().startsWith("%rel_")) continue;
             copy.put(e.getKey(), e.getValue());
         }
-        CARRY.put(id, new Carry(server, Collections.unmodifiableMap(copy), now));
+        CARRY.put(id, new Carry(server, Collections.unmodifiableMap(copy), vanished, disguised, invisible, gamemode, now));
     }
 
     /**
-     * Takes (and forgets) the values carried for this player, if they come from the same server and are fresh.
+     * Takes (and forgets) the state carried for this player, if it comes from the same server and is fresh.
      *
      * @param   id
      *          player UUID
@@ -363,13 +399,13 @@ public final class BridgeRequests<P> {
      *          player's current server
      * @param   now
      *          current time
-     * @return  the carried values, or {@code null} if there are none for this player and server
+     * @return  the carried state, or {@code null} if there is none for this player and server
      */
     @Nullable
-    public static Map<String, String> takeCarry(@NotNull UUID id, @Nullable String server, long now) {
+    public static Carry takeCarry(@NotNull UUID id, @Nullable String server, long now) {
         Carry carry = CARRY.remove(id);
         if (carry == null || server == null || !carry.server.equals(server) || now - carry.takenAt > CARRY_TTL_MILLIS) return null;
-        return carry.values;
+        return carry;
     }
 
     /** Forgets every carried value (end of a load, so later joins never get them) */

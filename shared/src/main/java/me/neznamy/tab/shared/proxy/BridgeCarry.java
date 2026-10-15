@@ -40,7 +40,8 @@ public final class BridgeCarry {
             ProxyTabPlayer p = (ProxyTabPlayer) player;
             Map<String, String> values = copy(p.getPlaceholders());
             if (values == null) continue; // changing right now: this player is asked right away instead
-            BridgeRequests.carry(p.getUniqueId(), p.server == null ? null : p.server.getName(), values, now);
+            BridgeRequests.carry(p.getUniqueId(), p.server == null ? null : p.server.getName(), values, p.vanished,
+                    p.isDisguised(), p.hasInvisibilityPotion(), p.getGamemode(), now);
         }
     }
 
