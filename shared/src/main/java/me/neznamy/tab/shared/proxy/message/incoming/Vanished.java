@@ -18,6 +18,7 @@ public class Vanished implements IncomingMessage {
 
     @Override
     public void process(@NotNull ProxyTabPlayer player) {
+        player.noteBridgeFlagUpdate(); // [6b6t patch 6b6t.8]
         if (player.isVanished() != vanished) {
             player.setVanished(vanished);
             TAB.getInstance().getFeatureManager().onVanishStatusChange(player);

@@ -79,6 +79,9 @@ public final class PatchStats {
     /** Formats sent to the other proxy with unanswered backend placeholders removed */
     public static final AtomicLong bridgeRawStripped = new AtomicLong();
 
+    /** Backend plugin messages dropped because they came from a server the player already left */
+    public static final AtomicLong bridgeForeignDropped = new AtomicLong();
+
     private static final Map<String, AtomicLong> ALL = new LinkedHashMap<>();
     private static final Map<String, Long> LAST = new LinkedHashMap<>();
 
@@ -102,6 +105,7 @@ public final class PatchStats {
         ALL.put("bridge-resync", bridgeResync);
         ALL.put("bridge-carried", bridgeCarried);
         ALL.put("bridge-raw-stripped", bridgeRawStripped);
+        ALL.put("bridge-foreign-dropped", bridgeForeignDropped);
         ALL.put("ghosts-removed", ghostsRemoved);
         ALL.put("log-rotations", logRotations);
     }

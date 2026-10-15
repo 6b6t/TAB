@@ -68,12 +68,9 @@ public class PlayerJoinResponse implements IncomingMessage {
         TAB.getInstance().getFeatureManager().onWorldChange(player.getUniqueId(), world);
         if (group != null) player.setGroup(group);
         // reset attributes from previous server to default false values, new server will send separate update packets if needed
-        if (player.isVanished()) { // Only trigger if bridge says player is vanished, do not trigger on proxy vanish
-            player.setVanished(false);
-            TAB.getInstance().getFeatureManager().onVanishStatusChange(player);
-        }
-        player.setDisguised(false);
-        player.setInvisibilityPotion(false);
+        // [6b6t patch 6b6t.8] an answer from the same server (retry, bridgeresync, reload) postpones it, see ProxyTabPlayer
+        String from = sourceServer != null ? sourceServer : (player.server == null ? null : player.server.getName());
+        if (from == null || !player.postponeFlagReset(from)) player.resetBridgeFlags();
         Map<PlayerPlaceholderImpl, String> playerPlaceholderUpdates = new HashMap<>();
         boolean remoteRelationalChanged = false; // [6b6t patch 6b6t.8]
         for (Map.Entry<String, Object> entry : placeholders.entrySet()) {

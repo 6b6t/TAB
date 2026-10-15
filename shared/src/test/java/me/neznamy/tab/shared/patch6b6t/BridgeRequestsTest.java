@@ -113,6 +113,33 @@ class BridgeRequestsTest {
         assertTrue(logs.isEmpty());
     }
 
+    @Test void coldStartFirstLostAnswerIsRetriedWithoutLogSpam() {
+        answeredServers.clear(); // proxy just started: no worker has answered anyone yet
+        P p = new P("worker-1"), event = new P("event-1");
+        tracker.requestSent(p.id, p, "worker-1");
+        tracker.requestSent(event.id, event, "event-1");
+        runFor(10_000);
+        assertEquals(1, p.sends.size(), "the first lost answer of a worker is asked again");
+        p.answered = true;
+        tracker.answered(p.id, p, "worker-1");
+        assertFalse(tracker.isPending(p.id));
+        long gaveUp = counter(PatchStats.bridgeGaveUp, () -> runFor(200_000));
+        assertEquals(3, event.sends.size(), "a server that never answers gets the bounded retries");
+        assertEquals(1, gaveUp);
+        assertTrue(logs.isEmpty(), "no console line for a server that has never answered (maybe no bridge): " + logs);
+    }
+
+    @Test void skipListIsCaseInsensitiveAndConfigurable() {
+        settings("bridge-retry-skip-servers", " Lobby , login-server");
+        tracker = new BridgeRequests<>(port, PatchSettings::get, () -> now, answeredServers);
+        P lobby = new P("lobby"), backup = new P("backup-server");
+        tracker.requestSent(lobby.id, lobby, "lobby");
+        tracker.requestSent(backup.id, backup, "backup-server");
+        runFor(10_000);
+        assertTrue(lobby.sends.isEmpty(), "listed (any case): never asked again");
+        assertEquals(1, backup.sends.size(), "no longer listed: asked again");
+    }
+
     @Test void anAnswerTeachesThatAServerHasABridge() {
         P a = new P("lobby"), b = new P("lobby");
         tracker.requestSent(a.id, a, "lobby");

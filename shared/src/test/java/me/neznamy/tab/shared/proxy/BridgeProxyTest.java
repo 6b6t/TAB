@@ -14,6 +14,7 @@ import me.neznamy.tab.shared.FeatureManager;
 import me.neznamy.tab.shared.features.PlaceholderManagerImpl;
 import me.neznamy.tab.shared.features.playerlist.PlayerList;
 import me.neznamy.tab.shared.features.playerlist.PlayerListProxyPlayerData;
+import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.patch6b6t.BridgeRequests;
 import me.neznamy.tab.shared.patch6b6t.PatchSettings;
 import me.neznamy.tab.shared.patch6b6t.PatchStats;
@@ -133,7 +134,12 @@ class BridgeProxyTest {
         field(groups, GroupManager.class, "permissionPlugin", "LuckPerms");
         field(tab, TAB.class, "groupManager", groups);
         field(tab, TAB.class, "platform", java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
-                new Class<?>[]{Platform.class}, (o, m, args) -> null));
+                new Class<?>[]{Platform.class}, (o, m, args) -> {
+                    if (m.getName().equals("registerUnknownPlaceholder")) manager.registerPlayerPlaceholder((String) args[0], -1, ignored -> "");
+                    if (m.getName().equals("isProxy")) return true;
+                    if (m.getName().equals("getCommand")) return "btab";
+                    return null;
+                }));
         manager.registerRelationalBridgePlaceholder(SEAL, 500);
         manager.registerBridgePlaceholder(COLOR, 500);
         manager.registerPlayerPlaceholder(me.neznamy.tab.shared.TabConstants.Placeholder.WORLD, -1, p -> "world");
@@ -295,12 +301,116 @@ class BridgeProxyTest {
         assertEquals("§7[Player] " + SEAL + "%proxyside%", RemoteRelational.stripUnanswered(owner, text),
                 "only the backend placeholder without a value goes; relational stays for the receiver, proxy-side stays");
         assertEquals(1, PatchStats.bridgeRawStripped.get() - before);
-        owner.getPlaceholders().put(COLOR, COLOR); // the bridge answered and the value really is this text: keep it
-        assertEquals(text, RemoteRelational.stripUnanswered(owner, text));
+        owner.getPlaceholders().put(COLOR, COLOR); // the bridge answered with the raw text (expansion missing): still raw
+        assertEquals("§7[Player] " + SEAL + "%proxyside%", RemoteRelational.stripUnanswered(owner, text));
         owner.getPlaceholders().clear();
         Properties off = new Properties(); off.setProperty("bridge-raw-strip", "false"); PatchSettings.setForTests(off);
         assertEquals(text, RemoteRelational.stripUnanswered(owner, text));
         assertEquals("§7[Player] ", RemoteRelational.withoutRelational("§7[Player] " + SEAL));
+    }
+
+    private ProxySupport proxySupport() throws Exception {
+        ProxySupport proxy = new ProxySupport("test") {
+            public void sendMessage(String message) { }
+            public void register() { }
+            public void unregister() { }
+        };
+        TAB.getInstance().getFeatureManager().registerFeature(me.neznamy.tab.shared.TabConstants.Feature.PROXY_SUPPORT, proxy);
+        return proxy;
+    }
+
+    private static byte[] joinAnswer(String colorValue) {
+        ByteArrayDataOutput out = ByteStreams.newDataOutput();
+        out.writeUTF("world"); out.writeInt(1); out.writeUTF(COLOR); out.writeUTF(colorValue); out.writeInt(0);
+        return out.toByteArray();
+    }
+
+    @Test void lateAnswerOfThePreviousServerChangesNothingAndTheRetryStillHappens() throws Exception {
+        Fake p = player("Mover", "worker-2"); // switched worker-0 -> worker-2; worker-2's answer is lost
+        online(p);
+        p.getPlaceholders().put(COLOR, "&cOLD");
+        List<ProxyTabPlayer> resent = new ArrayList<>();
+        long[] now = {0};
+        java.util.Set<String> servers = new java.util.HashSet<>(Set.of("worker-0", "worker-2"));
+        BridgeRequests<ProxyTabPlayer> tracker = new BridgeRequests<>(new BridgeRequests.Port<ProxyTabPlayer>() {
+            public boolean isCurrent(@NotNull ProxyTabPlayer x) { return true; }
+            public String currentServer(@NotNull ProxyTabPlayer x) { return x.server.getName(); }
+            public boolean isAnswered(@NotNull ProxyTabPlayer x) { return x.isBridgeConnected(); }
+            public void send(@NotNull ProxyTabPlayer x) { resent.add(x); }
+            public void log(@NotNull String line) { }
+        }, PatchSettings::get, () -> now[0], servers);
+        tracker.requestSent(p.getUniqueId(), p, "worker-2");
+        PlayerJoinResponse old = new PlayerJoinResponse();
+        old.read(ByteStreams.newDataInput(joinAnswer("&aWORKER0")));
+        old.setSourceServer("worker-0");
+        long dropped = PatchStats.bridgeForeignDropped.get();
+        new me.neznamy.tab.shared.task.PluginMessageProcessTask(old, p, "worker-0").run(); // production path, processing thread
+        assertEquals(1, PatchStats.bridgeForeignDropped.get() - dropped);
+        assertFalse(p.isBridgeConnected(), "the old server's answer must not mark him answered");
+        assertEquals("&cOLD", p.getPlaceholders().get(COLOR), "nor change his values");
+        for (int i = 0; i < 41; i++) { now[0] += 250; tracker.tick(); }
+        assertEquals(1, resent.size(), "worker-2 is asked again");
+        // the answer of the current server is processed normally
+        PlayerJoinResponse current = new PlayerJoinResponse();
+        current.read(ByteStreams.newDataInput(joinAnswer("&aWORKER2")));
+        new me.neznamy.tab.shared.task.PluginMessageProcessTask(current, p, "worker-2").run();
+        assertTrue(p.isBridgeConnected());
+        assertEquals("&aWORKER2", p.getPlaceholders().get(COLOR));
+    }
+
+    @Test void vanishedPlayerStaysHiddenThroughASameServerAnswer() throws Exception {
+        Fake p = player("Staff", "worker-2");
+        online(p);
+        p.vanished = true;
+        field(p, ProxyTabPlayer.class, "bridgeStateServer", "worker-2"); // e.g. carried through a reload, or answered before
+        PlayerJoinResponse refresh = new PlayerJoinResponse();
+        refresh.read(ByteStreams.newDataInput(joinAnswer("&a")));
+        refresh.setSourceServer("worker-2");
+        refresh.process(p); // bridgeresync / retry / reload answer from the same worker
+        assertTrue(p.isVanished(), "no reveal while the bridge has not reported yet");
+        // the bridge's status poll confirms vanish within ~1 s
+        Field updates = ProxyTabPlayer.class.getDeclaredField("bridgeFlagUpdates"); updates.setAccessible(true);
+        int seen = (int) updates.get(p);
+        me.neznamy.tab.shared.proxy.message.incoming.Vanished confirm = new me.neznamy.tab.shared.proxy.message.incoming.Vanished();
+        confirm.read(ByteStreams.newDataInput(new byte[]{1}));
+        confirm.process(p); // SetVanished(true) from the new BridgePlayer's first status poll
+        p.finishPostponedFlagReset("worker-2", seen);
+        assertTrue(p.isVanished(), "confirmed: stays hidden");
+        // no confirmation (he un-vanished meanwhile): reset like upstream, after the delay
+        int seen2 = (int) updates.get(p);
+        p.finishPostponedFlagReset("worker-2", seen2);
+        assertFalse(p.isVanished());
+        // an answer from a NEW server resets at once (upstream: the new server reports vanish only when it is on)
+        p.vanished = true;
+        PlayerJoinResponse other = new PlayerJoinResponse();
+        other.read(ByteStreams.newDataInput(joinAnswer("&a")));
+        other.setSourceServer("worker-1");
+        p.server = me.neznamy.tab.shared.data.Server.byName("worker-1");
+        other.process(p);
+        assertFalse(p.isVanished());
+    }
+
+    @Test void remoteRelationalValuesAreOnlyShownWhileOnTheSameServer() throws Exception {
+        ProxySupport proxy = proxySupport();
+        Fake viewer = player("Viewer", "worker-2");
+        online(viewer);
+        UUID remoteId = UUID.nameUUIDFromBytes("Remote1".getBytes());
+        me.neznamy.tab.shared.features.proxy.ProxyPlayer copy = new me.neznamy.tab.shared.features.proxy.ProxyPlayer(
+                remoteId, remoteId, "Remote1", me.neznamy.tab.shared.data.Server.byName("worker-2"), false, false, null);
+        proxy.getProxyPlayers().put(remoteId, copy);
+        RemoteRelational.store(viewer, SEAL, "Remote1", "gold");
+        assertTrue(RemoteRelational.render(SEAL + "§7Remote1", viewer, remoteId, "Remote1").contains("✦"));
+        copy.setServer(me.neznamy.tab.shared.data.Server.byName("worker-1")); // he moved to another worker
+        assertEquals("§7Remote1", RemoteRelational.render(SEAL + "§7Remote1", viewer, remoteId, "Remote1"), "no stale seal");
+        copy.setServer(me.neznamy.tab.shared.data.Server.byName("worker-2"));
+        // the viewer switches: the values of his previous server's bridge are dropped before the new request goes out
+        viewer.sendJoinPluginMessage();
+        assertTrue(viewer.getRemoteRelational().isEmpty());
+        assertEquals("§7Remote1", RemoteRelational.render(SEAL + "§7Remote1", viewer, remoteId, "Remote1"));
+        // switch off: nothing is kept at all
+        Properties off = new Properties(); off.setProperty("remote-relational", "false"); PatchSettings.setForTests(off);
+        assertFalse(RemoteRelational.store(viewer, SEAL, "Remote1", "gold"));
+        assertTrue(viewer.getRemoteRelational().isEmpty());
     }
 
     @Test void reloadKeepsValuesOfTheSameServer() throws Exception {

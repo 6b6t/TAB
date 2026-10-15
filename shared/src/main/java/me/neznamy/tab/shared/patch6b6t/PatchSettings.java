@@ -82,6 +82,12 @@ public final class PatchSettings {
     /** Fill relational placeholders in formats of the other proxy's players per viewer (false = always empty) */
     public final boolean remoteRelational;
 
+    /** Servers without a TAB-Bridge: their requests are never asked again (lower case) */
+    public final java.util.Set<String> bridgeRetrySkipServers;
+
+    /** Drop backend plugin messages that come from another server than the one the player is on now */
+    public final boolean bridgeSourceCheck;
+
     private PatchSettings(@NotNull Properties p, @NotNull List<String> warnings) {
         staleGuard = bool(p, "stale-guard", true, warnings);
         tombstoneTtlMillis = 1000L * integer(p, "tombstone-ttl-seconds", 120, 5, 3600, warnings);
@@ -102,6 +108,8 @@ public final class PatchSettings {
         bridgeReloadCarry = bool(p, "bridge-reload-carry", true, warnings);
         bridgeRawStrip = bool(p, "bridge-raw-strip", true, warnings);
         remoteRelational = bool(p, "remote-relational", true, warnings);
+        bridgeRetrySkipServers = names(p, "bridge-retry-skip-servers", "login-server,backup-server");
+        bridgeSourceCheck = bool(p, "bridge-source-check", true, warnings);
     }
 
     /**
@@ -158,6 +166,16 @@ public final class PatchSettings {
         if (value.equalsIgnoreCase("false")) return false;
         warnings.add("Invalid value \"" + value + "\" for " + key + " in " + FILE_NAME + ", using " + def);
         return def;
+    }
+
+    private static java.util.Set<String> names(@NotNull Properties p, @NotNull String key, @NotNull String def) {
+        String value = p.getProperty(key, def);
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String name : value.split(",")) {
+            String trimmed = name.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!trimmed.isEmpty()) out.add(trimmed);
+        }
+        return java.util.Collections.unmodifiableSet(out);
     }
 
     private static int integer(@NotNull Properties p, @NotNull String key, int def, int min, int max, @NotNull List<String> warnings) {

@@ -67,5 +67,7 @@ public class ServerSwitch extends ProxyMessage {
         target.setServer(newServer);
         target.setLastChangeMillis(System.currentTimeMillis()); // [6b6t patch] team audit grace
         TAB.getInstance().getFeatureManager().onServerSwitch(target);
+        // [6b6t patch 6b6t.8] relational values in his format depend on whether a viewer shares his server: show again
+        me.neznamy.tab.shared.proxy.RemoteRelational.refreshRemote(target.getUniqueId());
     }
 }

@@ -66,6 +66,12 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     @Nullable
     private Double belowNameDistance;
 
+    /** [6b6t patch 6b6t.8] Server whose bridge state (vanish, disguise, invisibility) this proxy holds for the player */
+    @org.jetbrains.annotations.Nullable private volatile String bridgeStateServer;
+
+    /** [6b6t patch 6b6t.8] Vanish / disguise / invisibility updates received from the bridge (for the refresh check) */
+    private volatile int bridgeFlagUpdates;
+
     /**
      * Constructs new instance with given parameters and sends a message
      * to bridge about this player joining with join data
@@ -99,6 +105,7 @@ public abstract class ProxyTabPlayer extends TabPlayer {
             disguised = carried.disguised;
             invisibilityPotion = carried.invisible;
             gamemode = carried.gamemode;
+            bridgeStateServer = server;
             bridgeRequestTime = System.currentTimeMillis();
             requests.defer(uniqueId, this);
             PatchStats.bridgeCarried.incrementAndGet();
@@ -120,6 +127,7 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     public void sendJoinPluginMessage() {
         bridgeConnected = false; // Reset on server switch
         placeholders.clear();
+        remoteRelational.clear(); // [6b6t patch 6b6t.8] those came from the previous server's bridge
         sendBridgeRequest();
         // [6b6t patch 6b6t.8] ask again if this request gets no answer
         BridgeRequests<ProxyTabPlayer> requests = BridgeRequests.get();
@@ -133,6 +141,63 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     public void resendJoinPluginMessage() {
         bridgeConnected = false;
         sendBridgeRequest();
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Counts a vanish / disguise / invisibility update from the bridge.
+     */
+    public void noteBridgeFlagUpdate() {
+        bridgeFlagUpdates++;
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Upstream resets vanish / disguise / invisibility on every bridge answer because a new server
+     * sends them again only if they are on. For an answer from the same server (retry, bridgeresync, reload) that reset
+     * would show a vanished player until the bridge's next status poll (up to 1 s), on both proxies. So for those the
+     * reset waits: if the bridge has not confirmed any of them by then, they are reset like upstream does.
+     *
+     * @param   sourceServer
+     *          server the answer came from
+     * @return  {@code true} if the reset was postponed (same server), {@code false} if it must happen now
+     */
+    public boolean postponeFlagReset(@NotNull String sourceServer) {
+        boolean sameServer = sourceServer.equals(bridgeStateServer);
+        bridgeStateServer = sourceServer;
+        if (!sameServer) return false;
+        int seen = bridgeFlagUpdates;
+        CpuManager cpu = TAB.getInstance().getCpu();
+        cpu.getProcessingThread().executeLater(new me.neznamy.tab.shared.cpu.TimedCaughtTask(cpu,
+                () -> finishPostponedFlagReset(sourceServer, seen), "6b6t patch", "Bridge state check"), FLAG_RESET_DELAY_MILLIS);
+        return true;
+    }
+
+    /** How long a same-server answer keeps vanish etc. until the bridge confirms them (its status poll runs every 1 s) */
+    public static final int FLAG_RESET_DELAY_MILLIS = 3000;
+
+    /**
+     * [6b6t patch 6b6t.8] Second half of {@link #postponeFlagReset(String)}: resets what the bridge did not confirm.
+     *
+     * @param   sourceServer
+     *          server of the answer
+     * @param   seenUpdates
+     *          flag update count when the answer was processed
+     */
+    public void finishPostponedFlagReset(@NotNull String sourceServer, int seenUpdates) {
+        if (TAB.getInstance().getPlayer(getUniqueId()) != this || bridgeFlagUpdates != seenUpdates) return;
+        if (server == null || !sourceServer.equals(server.getName())) return; // switched: the new server's answer resets
+        resetBridgeFlags();
+    }
+
+    /**
+     * Upstream reset of the flags a new server only reports when they are on.
+     */
+    public void resetBridgeFlags() {
+        if (isVanished()) { // Only trigger if bridge says player is vanished, do not trigger on proxy vanish
+            setVanished(false);
+            TAB.getInstance().getFeatureManager().onVanishStatusChange(this);
+        }
+        setDisguised(false);
+        setInvisibilityPotion(false);
     }
 
     private void sendBridgeRequest() {
