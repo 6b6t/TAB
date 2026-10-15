@@ -304,8 +304,8 @@ public final class BridgeRequests<P> {
             Long last = lastGaveUpLog.get(e.getKey());
             if (!force && last != null && now - last < GAVE_UP_LOG_INTERVAL_MILLIS) continue;
             port.log("[TAB-6b6t] The TAB-Bridge of " + e.getKey() + " did not answer " + e.getValue() + " player(s) after "
-                    + settings.get().bridgeRetryMax + " retries; they keep raw values until they switch server or "
-                    + "/btab bridgeresync " + e.getKey() + " is run");
+                    + settings.get().bridgeRetryMax + " retries; they keep their last values (raw if they never had any) "
+                    + "until they switch server or /btab bridgeresync " + e.getKey() + " is run");
             lastGaveUpLog.put(e.getKey(), now);
             gaveUpSinceLog.remove(e.getKey());
         }

@@ -425,6 +425,27 @@ class BridgeProxyTest {
         assertFalse(p.hasInvisibilityPotion());
     }
 
+    @Test void scheduledFlagCheckRunsAfterTheDelay() throws Exception {
+        Fake p = player("Staff", "worker-2");
+        online(p);
+        p.vanished = true;
+        field(p, ProxyTabPlayer.class, "invisibilityPotion", true);
+        field(p, ProxyTabPlayer.class, "bridgeStateServer", "worker-2");
+        PlayerJoinResponse refresh = new PlayerJoinResponse();
+        refresh.read(ByteStreams.newDataInput(joinAnswer("&a")));
+        refresh.setSourceServer("worker-2");
+        refresh.process(p); // schedules the check on TAB's processing thread (ProxyTabPlayer.FLAG_RESET_DELAY_MILLIS)
+        me.neznamy.tab.shared.proxy.message.incoming.Invisible inv = new me.neznamy.tab.shared.proxy.message.incoming.Invisible();
+        inv.read(ByteStreams.newDataInput(bool(true)));
+        inv.process(p);
+        Thread.sleep(ProxyTabPlayer.FLAG_RESET_DELAY_MILLIS / 2);
+        assertTrue(p.isVanished(), "nothing reset before the delay");
+        long end = System.currentTimeMillis() + ProxyTabPlayer.FLAG_RESET_DELAY_MILLIS + 3000;
+        while (p.isVanished() && System.currentTimeMillis() < end) Thread.sleep(50);
+        assertFalse(p.isVanished(), "the scheduled check reset the unconfirmed vanish");
+        assertTrue(p.hasInvisibilityPotion(), "and kept the confirmed invisibility");
+    }
+
     @Test void relationalUpdateKeepsADisabledRemoteFormatCleared() throws Exception {
         ProxySupport proxy = proxySupport();
         PlayerList feature = allocate(PlayerList.class);
