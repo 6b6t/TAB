@@ -300,7 +300,8 @@ public final class RemoteRelational {
         for (ProxyPlayer player : proxy.getProxyPlayers().values()) {
             if (target != null && !player.getName().equalsIgnoreCase(target)) continue;
             if (targetId != null && !player.getUniqueId().equals(targetId)) continue;
-            if (player.isVanished() || player.getTabFormat() == null || !player.getTabFormat().isRelational()) continue;
+            if (player.isVanished() || player.getTabFormat() == null || player.getTabFormat().isDisabled()
+                    || !player.getTabFormat().isRelational()) continue; // a disabled format keeps its cleared name
             viewer.getTabList().updateDisplayName(player.getTablistId(), player.getTabFormat().getFormatComponent(viewer));
         }
     }

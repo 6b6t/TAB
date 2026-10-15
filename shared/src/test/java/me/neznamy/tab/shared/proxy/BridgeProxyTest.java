@@ -90,6 +90,7 @@ class BridgeProxyTest {
         field(p, ProxyTabPlayer.class, "permissions", new HashMap<>());
         field(p, ProxyTabPlayer.class, "placeholders", new ConcurrentHashMap<>());
         field(p, ProxyTabPlayer.class, "remoteRelational", new ConcurrentHashMap<>());
+        field(p, ProxyTabPlayer.class, "bridgeFlagUpdates", new java.util.concurrent.atomic.AtomicIntegerArray(3));
         field(p, Fake.class, "sent", new ArrayList<>());
         p.server = Server.byName(server);
         return p;
@@ -369,15 +370,14 @@ class BridgeProxyTest {
         refresh.process(p); // bridgeresync / retry / reload answer from the same worker
         assertTrue(p.isVanished(), "no reveal while the bridge has not reported yet");
         // the bridge's status poll confirms vanish within ~1 s
-        Field updates = ProxyTabPlayer.class.getDeclaredField("bridgeFlagUpdates"); updates.setAccessible(true);
-        int seen = (int) updates.get(p);
+        int[] seen = p.flagUpdateCounts();
         me.neznamy.tab.shared.proxy.message.incoming.Vanished confirm = new me.neznamy.tab.shared.proxy.message.incoming.Vanished();
         confirm.read(ByteStreams.newDataInput(new byte[]{1}));
         confirm.process(p); // SetVanished(true) from the new BridgePlayer's first status poll
         p.finishPostponedFlagReset("worker-2", seen);
         assertTrue(p.isVanished(), "confirmed: stays hidden");
         // no confirmation (he un-vanished meanwhile): reset like upstream, after the delay
-        int seen2 = (int) updates.get(p);
+        int[] seen2 = p.flagUpdateCounts();
         p.finishPostponedFlagReset("worker-2", seen2);
         assertFalse(p.isVanished());
         // an answer from a NEW server resets at once (upstream: the new server reports vanish only when it is on)
@@ -388,6 +388,77 @@ class BridgeProxyTest {
         p.server = me.neznamy.tab.shared.data.Server.byName("worker-1");
         other.process(p);
         assertFalse(p.isVanished());
+    }
+
+    private static byte[] bool(boolean b) { return new byte[]{(byte) (b ? 1 : 0)}; }
+
+    @Test void eachFlagIsReconciledOnItsOwn() throws Exception {
+        // vanished + invisible held; he un-vanished meanwhile, the new BridgePlayer only reports Invisible(true)
+        Fake p = player("Staff", "worker-2");
+        online(p);
+        p.vanished = true;
+        field(p, ProxyTabPlayer.class, "invisibilityPotion", true);
+        field(p, ProxyTabPlayer.class, "bridgeStateServer", "worker-2");
+        PlayerJoinResponse refresh = new PlayerJoinResponse();
+        refresh.read(ByteStreams.newDataInput(joinAnswer("&a")));
+        refresh.setSourceServer("worker-2");
+        refresh.process(p);
+        int[] seen = p.flagUpdateCounts();
+        me.neznamy.tab.shared.proxy.message.incoming.Invisible inv = new me.neznamy.tab.shared.proxy.message.incoming.Invisible();
+        inv.read(ByteStreams.newDataInput(bool(true)));
+        inv.process(p);
+        p.finishPostponedFlagReset("worker-2", seen);
+        assertFalse(p.isVanished(), "vanish was not confirmed: reset");
+        assertTrue(p.hasInvisibilityPotion(), "invisibility was confirmed: kept");
+        // the other way round: only Vanished(true) confirmed, the stale invisibility goes
+        p.vanished = true;
+        refresh = new PlayerJoinResponse();
+        refresh.read(ByteStreams.newDataInput(joinAnswer("&a")));
+        refresh.setSourceServer("worker-2");
+        refresh.process(p);
+        seen = p.flagUpdateCounts();
+        me.neznamy.tab.shared.proxy.message.incoming.Vanished van = new me.neznamy.tab.shared.proxy.message.incoming.Vanished();
+        van.read(ByteStreams.newDataInput(bool(true)));
+        van.process(p);
+        p.finishPostponedFlagReset("worker-2", seen);
+        assertTrue(p.isVanished());
+        assertFalse(p.hasInvisibilityPotion());
+    }
+
+    @Test void relationalUpdateKeepsADisabledRemoteFormatCleared() throws Exception {
+        ProxySupport proxy = proxySupport();
+        PlayerList feature = allocate(PlayerList.class);
+        field(feature, PlayerList.class, "cache", new StringToComponentCache("test", 100));
+        TAB.getInstance().getFeatureManager().registerFeature(me.neznamy.tab.shared.TabConstants.Feature.PLAYER_LIST, feature);
+        Fake viewer = player("Viewer", "worker-2");
+        List<Object> writes = new ArrayList<>();
+        field(viewer, TabPlayer.class, "tabList", java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{me.neznamy.tab.shared.platform.TabList.class}, (o, m, args) -> {
+                    if (m.getName().equals("updateDisplayName")) writes.add(args[1]);
+                    return m.getReturnType() == boolean.class ? false : null;
+                }));
+        online(viewer);
+        UUID remoteId = UUID.nameUUIDFromBytes("Remote1".getBytes());
+        me.neznamy.tab.shared.features.proxy.ProxyPlayer copy = new me.neznamy.tab.shared.features.proxy.ProxyPlayer(
+                remoteId, remoteId, "Remote1", me.neznamy.tab.shared.data.Server.byName("worker-2"), false, false, null);
+        proxy.getProxyPlayers().put(remoteId, copy);
+        ByteArrayDataOutput out = ByteStreams.newDataOutput();
+        out.writeLong(1); out.writeLong(remoteId.getMostSignificantBits()); out.writeLong(remoteId.getLeastSignificantBits());
+        out.writeUTF("Remote1"); out.writeUTF(SEAL + "§7"); out.writeUTF("Remote1"); out.writeUTF(""); out.writeBoolean(true); // disabled
+        copy.setTabFormat(new PlayerListProxyPlayerData(ByteStreams.newDataInput(out.toByteArray()), feature));
+        UpdatePlaceholder update = new UpdatePlaceholder();
+        update.read(ByteStreams.newDataInput(updateRel(SEAL, "Remote1", "gold")));
+        update.process(viewer);
+        assertTrue(writes.isEmpty(), "a disabled format keeps its cleared display name: " + writes);
+        // enabled: the new value is shown
+        out = ByteStreams.newDataOutput();
+        out.writeLong(2); out.writeLong(remoteId.getMostSignificantBits()); out.writeLong(remoteId.getLeastSignificantBits());
+        out.writeUTF("Remote1"); out.writeUTF(SEAL + "§7"); out.writeUTF("Remote1"); out.writeUTF(""); out.writeBoolean(false);
+        copy.setTabFormat(new PlayerListProxyPlayerData(ByteStreams.newDataInput(out.toByteArray()), feature));
+        UpdatePlaceholder update2 = new UpdatePlaceholder();
+        update2.read(ByteStreams.newDataInput(updateRel(SEAL, "Remote1", "&6x")));
+        update2.process(viewer);
+        assertEquals(1, writes.size());
     }
 
     @Test void remoteRelationalValuesAreOnlyShownWhileOnTheSameServer() throws Exception {
