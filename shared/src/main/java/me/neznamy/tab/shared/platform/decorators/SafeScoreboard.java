@@ -4,6 +4,8 @@ import lombok.*;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.chat.EnumChatFormat;
 import me.neznamy.tab.shared.chat.component.TabComponent;
+import me.neznamy.tab.shared.patch6b6t.PatchSettings;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
 import me.neznamy.tab.shared.platform.Scoreboard;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import org.jetbrains.annotations.NotNull;
@@ -48,6 +50,18 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
 
     /** Registered teams */
     private final Map<String, Team> teams = new ConcurrentHashMap<>();
+
+    /**
+     * [6b6t patch] Entry -> name of the team that last received it. A client keeps an entry in one team only,
+     * so this is the team the client shows the entry in (as far as this scoreboard sent it).
+     */
+    private final Map<String, String> entryOwner = new HashMap<>();
+
+    /** [6b6t patch] Entry -> team it was taken away from by a later team registration */
+    private final Map<String, String> displacedFrom = new HashMap<>();
+
+    /** [6b6t patch] True while clear() removes everything (no restores then) */
+    private boolean clearing;
 
     @Override
     public synchronized void registerObjective(@NonNull String objectiveName, @NonNull TabComponent title,
@@ -137,12 +151,14 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
                                    @NonNull Collection<String> players, int options, @NonNull EnumChatFormat color) {
         Team existing = teams.get(name);
         if (existing != null) {
+            PatchStats.registerDuplicate.incrementAndGet();
             error("Tried to register duplicated team %s with entry %s, while this team already exists with entry %s to player ",
                     name, players.toString(), existing.players.toString());
             return;
         }
         Team team = new Team(createTeam(name), name, prefix, suffix, visibility, collision, players, options, color);
         teams.put(name, team);
+        trackEntries(team);
         if (frozen) return;
         registerTeam(team);
     }
@@ -151,11 +167,12 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
     public synchronized void unregisterTeam(@NonNull String teamName) {
         Team team = teams.remove(teamName);
         if (team == null) {
+            PatchStats.unregisterMissing.incrementAndGet();
             error("Tried to unregister non-existing team %s for player ", teamName);
             return;
         }
-        if (frozen) return;
-        unregisterTeam(team);
+        if (!frozen) unregisterTeam(team);
+        restoreDisplacedEntries(team);
     }
 
     @Override
@@ -164,6 +181,7 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
                                  int options, @NonNull EnumChatFormat color) {
         Team team = teams.get(name);
         if (team == null) {
+            PatchStats.modifyMissing.incrementAndGet();
             error("Tried to modify non-existing team %s for player ", name);
             return;
         }
@@ -212,6 +230,11 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
         }
         for (Team team : teams.values()) {
             registerTeam(team);
+            // [6b6t patch] keep the entry -> team model equal to what the client now shows (last registration wins)
+            for (String entry : team.getPlayers()) {
+                entryOwner.put(entry, team.getName());
+                displacedFrom.remove(entry);
+            }
         }
     }
 
@@ -220,9 +243,136 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
         for (String objective : objectives.keySet()) {
             unregisterObjective(objective);
         }
-        for (String team : teams.keySet()) {
-            unregisterTeam(team);
+        clearing = true;
+        try {
+            for (String team : teams.keySet()) {
+                unregisterTeam(team);
+            }
+        } finally {
+            clearing = false;
         }
+        entryOwner.clear();
+        displacedFrom.clear();
+    }
+
+    // ---------------- [6b6t patch] self-repair, layer A ----------------
+
+    /**
+     * [6b6t patch] Records which team each entry of a newly registered team is in. If an entry was in another
+     * still registered team, the client has just moved it; remember where it came from.
+     *
+     * @param   team
+     *          newly registered team
+     */
+    private void trackEntries(@NonNull Team team) {
+        for (String entry : team.getPlayers()) {
+            String previous = entryOwner.put(entry, team.getName());
+            if (previous != null && !previous.equals(team.getName()) && teams.containsKey(previous)) {
+                displacedFrom.put(entry, previous);
+                PatchStats.entryConflicts.incrementAndGet();
+            } else {
+                displacedFrom.remove(entry);
+            }
+        }
+    }
+
+    /**
+     * [6b6t patch] Called after a team was removed. If one of its entries had been taken from another team that
+     * still exists and still lists the entry, the client now shows the entry in no team at all (white name,
+     * sorted to the top) although our model says it is in that other team. Put it back, for this viewer only.
+     * This is exactly what happened in the cross-proxy race (copy's team took the entry, then got removed).
+     *
+     * @param   removed
+     *          team that was just removed
+     */
+    private void restoreDisplacedEntries(@NonNull Team removed) {
+        if (clearing) return;
+        for (String entry : removed.getPlayers()) {
+            if (!removed.getName().equals(entryOwner.get(entry))) continue; // entry is shown in another team, nothing lost
+            entryOwner.remove(entry);
+            String back = displacedFrom.remove(entry);
+            if (back == null) continue;
+            Team backTeam = teams.get(back);
+            if (backTeam == null || !backTeam.getPlayers().contains(entry)) continue;
+            entryOwner.put(entry, back);
+            if (!PatchSettings.get().entryRestore) continue;
+            PatchStats.entryRestored.incrementAndGet();
+            if (frozen) continue; // resend() after unfreezing registers it anyway
+            resendTeam(backTeam);
+        }
+    }
+
+    /**
+     * [6b6t patch] Returns {@code true} if the team exists in this scoreboard, lists the entry and is the team the
+     * entry was last sent into. Used by the periodic team audit.
+     *
+     * @param   teamName
+     *          team name
+     * @param   entry
+     *          entry (player name)
+     * @return  {@code true} if consistent
+     */
+    public synchronized boolean isEntryInTeam(@NonNull String teamName, @NonNull String entry) {
+        Team team = teams.get(teamName);
+        if (team == null || !team.getPlayers().contains(entry)) return false;
+        String owner = entryOwner.get(entry);
+        return owner == null || owner.equals(teamName);
+    }
+
+    /**
+     * [6b6t patch] Returns {@code true} if the team exists in this scoreboard and lists the entry.
+     *
+     * @param   teamName
+     *          team name
+     * @param   entry
+     *          entry (player name)
+     * @return  {@code true} if the team lists the entry
+     */
+    public synchronized boolean teamHasEntry(@NonNull String teamName, @NonNull String entry) {
+        Team team = teams.get(teamName);
+        return team != null && team.getPlayers().contains(entry);
+    }
+
+    /**
+     * [6b6t patch] Returns {@code true} if a team with this name exists in this scoreboard.
+     *
+     * @param   teamName
+     *          team name
+     * @return  {@code true} if registered
+     */
+    public synchronized boolean hasTeam(@NonNull String teamName) {
+        return teams.containsKey(teamName);
+    }
+
+    /**
+     * [6b6t patch] Sends the team again to this viewer only (remove + create), which puts its entries
+     * back into it on the client. Used by the self-repair.
+     *
+     * @param   teamName
+     *          team name
+     * @return  {@code true} if the team existed and was resent
+     */
+    public synchronized boolean resendTeam(@NonNull String teamName) {
+        Team team = teams.get(teamName);
+        if (team == null) return false;
+        for (String entry : team.getPlayers()) {
+            entryOwner.put(entry, teamName);
+            displacedFrom.remove(entry);
+        }
+        if (!frozen) resendTeam(team);
+        return true;
+    }
+
+    /**
+     * [6b6t patch] Re-creates a team on the client of this viewer. Default: unregister + register through the
+     * platform (VelocityScoreboardAPI on Velocity, so its per-viewer state stays consistent).
+     *
+     * @param   team
+     *          team to resend
+     */
+    protected void resendTeam(@NonNull Team team) {
+        unregisterTeam(team);
+        registerTeam(team);
     }
 
     /**

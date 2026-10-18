@@ -4,6 +4,7 @@ import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.api.proxy.player.TabListEntry;
 import com.velocitypowered.api.util.GameProfile;
 import com.velocitypowered.proxy.protocol.packet.LegacyPlayerListItemPacket;
+import com.velocitypowered.proxy.protocol.packet.RemovePlayerInfoPacket;
 import com.velocitypowered.proxy.protocol.packet.UpsertPlayerInfoPacket;
 import com.velocitypowered.proxy.protocol.packet.chat.ComponentHolder;
 import lombok.NonNull;
@@ -39,6 +40,7 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
 
     @Override
     public void removeEntry(@NonNull UUID entry) {
+        noteOwnRemove(entry); // [6b6t patch 6b6t.7] Velocity writes exactly one remove packet per call
         player.getPlayer().getTabList().removeEntry(entry);
     }
 
@@ -141,6 +143,7 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
                     }
                 }
                 if (listItem.getAction() == ADD_PLAYER) {
+                    onClientAdd(item.getUuid()); // [6b6t patch 6b6t.7]
                     TAB.getInstance().getFeatureManager().onEntryAdd(player, item.getUuid(), item.getName());
                 }
             }
@@ -168,9 +171,12 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
                     }
                 }
                 if (update.getActions().contains(UpsertPlayerInfoPacket.Action.ADD_PLAYER)) {
+                    onClientAdd(item.getProfileId()); // [6b6t patch 6b6t.7]
                     TAB.getInstance().getFeatureManager().onEntryAdd(player, item.getProfileId(), item.getProfile().getName());
                 }
             }
+        } else if (packet instanceof RemovePlayerInfoPacket remove) {
+            onClientRemove(remove.getProfilesToRemove()); // [6b6t patch 6b6t.7]
         }
         return packet;
     }

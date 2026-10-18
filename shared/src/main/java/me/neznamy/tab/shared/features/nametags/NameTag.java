@@ -13,6 +13,7 @@ import me.neznamy.tab.shared.data.Server;
 import me.neznamy.tab.shared.features.proxy.ProxyPlayer;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.types.*;
+import me.neznamy.tab.shared.patch6b6t.PatchSettings;
 import me.neznamy.tab.shared.platform.Scoreboard.CollisionRule;
 import me.neznamy.tab.shared.platform.Scoreboard.NameVisibility;
 import me.neznamy.tab.shared.platform.TabPlayer;
@@ -88,6 +89,11 @@ public class NameTag extends TabFeature implements NameTagManager, JoinListener,
         }
         visibilityManager.load();
         collisionManager.load();
+        // [6b6t patch] Fix 3 layer B: periodic team audit on this feature's own thread (no locking against NameTag code)
+        if (PatchSettings.get().auditEnabled) {
+            TeamAudit audit = new TeamAudit(this);
+            customThread.repeatTask(new TimedCaughtTask(TAB.getInstance().getCpu(), audit::tick, getFeatureName(), "6b6t team audit"), 1000);
+        }
     }
 
     @Override
@@ -123,6 +129,12 @@ public class NameTag extends TabFeature implements NameTagManager, JoinListener,
         if (proxy != null) {
             for (ProxyPlayer proxied : proxy.getProxyPlayers().values()) {
                 if (proxied.getNametag() == null) continue; // This proxy player is not loaded yet
+                // [6b6t patch] Only copies that are shown (CONNECTED, enabled). Upstream also registered QUEUED twins of
+                // other local players (same entry as their local team -> entry stolen, teamless after the twin quits)
+                // and disabled copies. A copy that becomes CONNECTED later is registered by NameTagProxyHandler.onJoin.
+                if (proxied.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED) continue;
+                if (proxied.getNametag().isDisabled()) continue;
+                if (connectedPlayer.teamData.hasTeamRegistered(proxied)) continue;
                 connectedPlayer.teamData.registerTeam(
                         proxied,
                         proxied.getNametag().getResolvedTeamName(),
@@ -241,7 +253,7 @@ public class NameTag extends TabFeature implements NameTagManager, JoinListener,
         }
     }
 
-    private void registerTeam(@NonNull TabPlayer p, @NonNull TabPlayer viewer) {
+    void registerTeam(@NonNull TabPlayer p, @NonNull TabPlayer viewer) {
         if (shouldRegister(p, viewer)) {
             viewer.teamData.registerTeam(
                     p,
@@ -257,7 +269,7 @@ public class NameTag extends TabFeature implements NameTagManager, JoinListener,
         }
     }
 
-    private boolean shouldRegister(@NotNull TabPlayer teamOwner, @NonNull TabPlayer viewer) {
+    boolean shouldRegister(@NotNull TabPlayer teamOwner, @NonNull TabPlayer viewer) {
         if (teamOwner.teamData.isDisabled()) return false;
         if (teamOwner.teamData.vanishedFor.contains(viewer.getUniqueId())) return false;
         if (!viewer.canSee(teamOwner) && teamOwner != viewer) return false;

@@ -6,7 +6,11 @@ import me.neznamy.tab.api.integration.VanishIntegration;
 import me.neznamy.tab.api.placeholder.PlayerPlaceholder;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.TabConstants;
+import me.neznamy.tab.shared.chat.TabTextColor;
+import me.neznamy.tab.shared.chat.component.TabTextComponent;
 import me.neznamy.tab.shared.cpu.CpuManager;
+import me.neznamy.tab.shared.patch6b6t.BridgeRequests;
+import me.neznamy.tab.shared.patch6b6t.PatchStats;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import me.neznamy.tab.shared.proxy.message.outgoing.OutgoingMessage;
 import me.neznamy.tab.shared.proxy.message.outgoing.PermissionRequest;
@@ -18,6 +22,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Abstract class for player on proxy containing variables and methods
@@ -47,8 +52,23 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     /** Map of player's requested permissions */
     private final Map<String, Boolean> permissions = new HashMap<>();
 
-    /** Map of placeholders sent by the bridge */
-    private final Map<String, String> placeholders = new HashMap<>();
+    /** Map of placeholders sent by the bridge ([6b6t patch 6b6t.8] concurrent: also read when formats are sent to the other proxy) */
+    private final Map<String, String> placeholders = new ConcurrentHashMap<>();
+
+    /**
+     * [6b6t patch 6b6t.8] Relational values the bridge of this player's server sent for players of the other proxy:
+     * identifier -> lower-case target name -> value. Local players keep theirs in {@code lastRelationalValues}.
+     */
+    private final Map<String, Map<String, String>> remoteRelational = new ConcurrentHashMap<>();
+
+    /** [6b6t patch 6b6t.8] Server whose bridge state (vanish, disguise, invisibility) this proxy holds for the player */
+    @org.jetbrains.annotations.Nullable private volatile String bridgeStateServer;
+
+    /** [6b6t patch 6b6t.8] Vanish / disguise / invisibility updates received from the bridge, per flag (refresh check) */
+    private final java.util.concurrent.atomic.AtomicIntegerArray bridgeFlagUpdates = new java.util.concurrent.atomic.AtomicIntegerArray(3);
+
+    /** Indexes into {@link #bridgeFlagUpdates} */
+    public static final int FLAG_VANISH = 0, FLAG_DISGUISE = 1, FLAG_INVISIBLE = 2;
 
     /**
      * Constructs new instance with given parameters and sends a message
@@ -70,7 +90,26 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     protected ProxyTabPlayer(@NotNull ProxyPlatform platform, @NotNull Object player, @NotNull UUID uniqueId,
                              @NotNull String name, @NotNull String server, int protocolVersion) {
         super(platform, player, uniqueId, name, server, "N/A", protocolVersion, TAB.getInstance().getConfiguration().getConfig().isOnlineUuidInTabList());
-        sendJoinPluginMessage();
+        // [6b6t patch 6b6t.8] After a reload keep the values of the old copy of this player (same server) and send the
+        // request in the reload's staggered batches; otherwise ask the bridge right away as before.
+        BridgeRequests.Carry carried = BridgeRequests.takeCarry(uniqueId, server, System.currentTimeMillis());
+        BridgeRequests<ProxyTabPlayer> requests = BridgeRequests.get();
+        if (carried != null && requests != null) {
+            bridgeConnected = false;
+            placeholders.clear();
+            placeholders.putAll(carried.values);
+            // not loaded yet: plain fields, no feature events (a vanished player stays hidden through the reload)
+            vanished = carried.vanished;
+            disguised = carried.disguised;
+            invisibilityPotion = carried.invisible;
+            gamemode = carried.gamemode;
+            bridgeStateServer = server;
+            bridgeRequestTime = System.currentTimeMillis();
+            requests.defer(uniqueId, this);
+            PatchStats.bridgeCarried.incrementAndGet();
+        } else {
+            sendJoinPluginMessage();
+        }
     }
 
     /**
@@ -80,6 +119,100 @@ public abstract class ProxyTabPlayer extends TabPlayer {
     public void sendJoinPluginMessage() {
         bridgeConnected = false; // Reset on server switch
         placeholders.clear();
+        remoteRelational.clear(); // [6b6t patch 6b6t.8] those came from the previous server's bridge
+        sendBridgeRequest();
+        // [6b6t patch 6b6t.8] ask again if this request gets no answer
+        BridgeRequests<ProxyTabPlayer> requests = BridgeRequests.get();
+        if (requests != null) requests.requestSent(getUniqueId(), this, server == null ? null : server.getName());
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Sends the same request again (retry, {@code /btab bridgeresync}, reload batch) without wiping
+     * the values this proxy already has, so nothing goes raw while the bridge answers.
+     */
+    public void resendJoinPluginMessage() {
+        bridgeConnected = false;
+        sendBridgeRequest();
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Counts a vanish / disguise / invisibility update from the bridge.
+     *
+     * @param   flag
+     *          {@link #FLAG_VANISH}, {@link #FLAG_DISGUISE} or {@link #FLAG_INVISIBLE}
+     */
+    public void noteBridgeFlagUpdate(int flag) {
+        bridgeFlagUpdates.incrementAndGet(flag);
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Upstream resets vanish / disguise / invisibility on every bridge answer because a new server
+     * sends them again only if they are on. For an answer from the same server (retry, bridgeresync, reload) that reset
+     * would show a vanished player until the bridge's next status poll (up to 1 s), on both proxies. So for those the
+     * reset waits, and each flag the bridge has not confirmed by then is reset like upstream does (the new BridgePlayer
+     * starts with every flag off and only reports the ones that are on).
+     *
+     * @param   sourceServer
+     *          server the answer came from
+     * @return  {@code true} if the reset was postponed (same server), {@code false} if it must happen now
+     */
+    public boolean postponeFlagReset(@NotNull String sourceServer) {
+        boolean sameServer = sourceServer.equals(bridgeStateServer);
+        bridgeStateServer = sourceServer;
+        if (!sameServer) return false;
+        int[] seen = flagUpdateCounts();
+        CpuManager cpu = TAB.getInstance().getCpu();
+        cpu.getProcessingThread().executeLater(new me.neznamy.tab.shared.cpu.TimedCaughtTask(cpu,
+                () -> finishPostponedFlagReset(sourceServer, seen), "6b6t patch", "Bridge state check"), FLAG_RESET_DELAY_MILLIS);
+        return true;
+    }
+
+    /** How long a same-server answer keeps vanish etc. until the bridge confirms them (its status poll runs every 1 s) */
+    public static final int FLAG_RESET_DELAY_MILLIS = 3000;
+
+    /**
+     * [6b6t patch 6b6t.8] Second half of {@link #postponeFlagReset(String)}: resets what the bridge did not confirm.
+     *
+     * @param   sourceServer
+     *          server of the answer
+     * @param   seenUpdates
+     *          per-flag update counts when the answer was processed
+     */
+    public void finishPostponedFlagReset(@NotNull String sourceServer, @NotNull int[] seenUpdates) {
+        if (TAB.getInstance().getPlayer(getUniqueId()) != this) return;
+        if (server == null || !sourceServer.equals(server.getName())) return; // switched: the new server's answer resets
+        int[] now = flagUpdateCounts();
+        resetBridgeFlags(now[FLAG_VANISH] == seenUpdates[FLAG_VANISH], now[FLAG_DISGUISE] == seenUpdates[FLAG_DISGUISE],
+                now[FLAG_INVISIBLE] == seenUpdates[FLAG_INVISIBLE]);
+    }
+
+    /**
+     * Current per-flag update counts.
+     *
+     * @return  counts indexed by {@link #FLAG_VANISH}, {@link #FLAG_DISGUISE}, {@link #FLAG_INVISIBLE}
+     */
+    @NotNull
+    public int[] flagUpdateCounts() {
+        return new int[]{bridgeFlagUpdates.get(FLAG_VANISH), bridgeFlagUpdates.get(FLAG_DISGUISE), bridgeFlagUpdates.get(FLAG_INVISIBLE)};
+    }
+
+    /**
+     * Upstream reset of the flags a new server only reports when they are on.
+     */
+    public void resetBridgeFlags() {
+        resetBridgeFlags(true, true, true);
+    }
+
+    private void resetBridgeFlags(boolean vanish, boolean disguise, boolean invisible) {
+        if (vanish && isVanished()) { // Only trigger if bridge says player is vanished, do not trigger on proxy vanish
+            setVanished(false);
+            TAB.getInstance().getFeatureManager().onVanishStatusChange(this);
+        }
+        if (disguise) setDisguised(false);
+        if (invisible) setInvisibilityPotion(false);
+    }
+
+    private void sendBridgeRequest() {
         sendPluginMessage(new PlayerJoin(
                 TAB.getInstance().getGroupManager().getPermissionPlugin().contains("Vault") &&
                     !TAB.getInstance().getConfiguration().getConfig().isGroupsByPermissions(),
@@ -89,6 +222,37 @@ public abstract class ProxyTabPlayer extends TabPlayer {
         expansionData.resendAllValues();
         bridgeRequestTime = System.currentTimeMillis();
     }
+
+    /**
+     * [6b6t patch 6b6t.8] Production access for {@link BridgeRequests}.
+     */
+    public static final BridgeRequests.Port<ProxyTabPlayer> BRIDGE_PORT = new BridgeRequests.Port<ProxyTabPlayer>() {
+
+        @Override
+        public boolean isCurrent(@NotNull ProxyTabPlayer player) {
+            return player.isOnline() && TAB.getInstance().getPlayer(player.getUniqueId()) == player;
+        }
+
+        @Override
+        public String currentServer(@NotNull ProxyTabPlayer player) {
+            return player.server == null ? null : player.server.getName();
+        }
+
+        @Override
+        public boolean isAnswered(@NotNull ProxyTabPlayer player) {
+            return player.isBridgeConnected();
+        }
+
+        @Override
+        public void send(@NotNull ProxyTabPlayer player) {
+            player.resendJoinPluginMessage();
+        }
+
+        @Override
+        public void log(@NotNull String line) {
+            TAB.getInstance().getPlatform().logInfo(new TabTextComponent(line, (TabTextColor) null));
+        }
+    };
 
     /**
      * Sets permission presence status to provided value

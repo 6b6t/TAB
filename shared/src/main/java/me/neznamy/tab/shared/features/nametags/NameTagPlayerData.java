@@ -264,4 +264,71 @@ public class NameTagPlayerData {
             player.getScoreboard().unregisterTeam(teamName);
         }
     }
+
+    // ---------------- [6b6t patch] ----------------
+
+    /**
+     * [6b6t patch] Returns name of the team registered for this viewer for given local player.
+     *
+     * @param   teamOwner
+     *          Team owner
+     * @return  registered team name or {@code null} if not registered
+     */
+    @Nullable
+    public String getRegisteredTeamName(@NotNull TabPlayer teamOwner) {
+        return registeredTeams.get(teamOwner);
+    }
+
+    /**
+     * [6b6t patch] Returns name of the team registered for this viewer for given proxy player.
+     *
+     * @param   teamOwner
+     *          Team owner
+     * @return  registered team name or {@code null} if not registered
+     */
+    @Nullable
+    public String getRegisteredProxyTeamName(@NotNull ProxyPlayer teamOwner) {
+        return registeredProxyTeams.get(teamOwner);
+    }
+
+    /**
+     * [6b6t patch] Returns a copy of the proxy teams registered for this viewer (for the team audit).
+     *
+     * @return  copy of registered proxy teams
+     */
+    @NotNull
+    public Map<ProxyPlayer, String> snapshotProxyTeams() {
+        return new HashMap<>(registeredProxyTeams);
+    }
+
+    /**
+     * [6b6t patch] Returns a copy of the local teams registered for this viewer (for the team audit).
+     *
+     * @return  copy of registered local teams
+     */
+    @NotNull
+    public Map<TabPlayer, String> snapshotTeams() {
+        return new HashMap<>(registeredTeams);
+    }
+
+    /**
+     * [6b6t patch] Forgets a registered local team without sending anything (used by the audit when the
+     * scoreboard no longer has the team, so an unregister would only log "unregister non-existing team").
+     *
+     * @param   teamOwner
+     *          Team owner
+     */
+    public void forgetTeam(@NotNull TabPlayer teamOwner) {
+        registeredTeams.remove(teamOwner);
+    }
+
+    /**
+     * [6b6t patch] Forgets a registered proxy team without sending anything.
+     *
+     * @param   teamOwner
+     *          Team owner
+     */
+    public void forgetTeam(@NotNull ProxyPlayer teamOwner) {
+        registeredProxyTeams.remove(teamOwner);
+    }
 }

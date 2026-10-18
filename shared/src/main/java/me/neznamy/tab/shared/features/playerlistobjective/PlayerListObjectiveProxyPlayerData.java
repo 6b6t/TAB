@@ -67,15 +67,28 @@ public class PlayerListObjectiveProxyPlayerData extends ProxyMessage {
         out.writeUTF(fancyValue);
     }
 
+    /** [6b6t patch] Player this message is about */
+    @Override
+    @NotNull
+    public UUID getSubjectId() {
+        return playerId;
+    }
+
+    /** [6b6t patch] Stores the data as queued data of the sending proxy */
+    @Override
+    public void queue(@NotNull ProxySupport proxySupport) {
+        QueuedData data = proxySupport.queuedFor(playerId, getSourceProxy());
+        if (data.getPlayerlist() == null || data.getPlayerlist().id < id) {
+            data.setPlayerlist(this);
+        }
+    }
+
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer target = proxySupport.getProxyPlayers().get(playerId);
         if (target == null) {
             unknownPlayer(playerId.toString(), "playerlist objective update");
-            QueuedData data = proxySupport.getQueuedData().computeIfAbsent(playerId, k -> new QueuedData());
-            if (data.getPlayerlist() == null || data.getPlayerlist().id < id) {
-                data.setPlayerlist(this);
-            }
+            queue(proxySupport);
             return;
         }
         if (target.getPlayerlist() != null && target.getPlayerlist().id > id) {
