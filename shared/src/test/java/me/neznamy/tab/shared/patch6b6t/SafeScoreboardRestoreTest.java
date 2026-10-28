@@ -144,4 +144,27 @@ class SafeScoreboardRestoreTest {
         register("c", "Q");
         assertEquals(before + 1, PatchStats.entryConflicts.get());
     }
+
+    @Test
+    void restoredEntryRemainsProtectedFromBackendRemoval() {
+        register("ownerA", "P");
+        register("copyA", "P");
+        sb.unregisterTeam("copyA");
+
+        assertEquals(List.of("P"), sb.onTeamPacket(Scoreboard.TeamAction.CREATE, "ownerA", List.of("P")));
+        assertTrue(sb.onTeamPacket(Scoreboard.TeamAction.REMOVE_PLAYER, "ownerA", List.of("P")).isEmpty());
+        assertEquals("ownerA", client.get("P"));
+    }
+
+    @Test
+    void resendingTeamUpdatesExpectedBackendOwnership() {
+        register("ownerA", "P");
+        register("copyA", "P");
+        sb.resendTeam("ownerA");
+
+        assertEquals(List.of("P"), sb.onTeamPacket(Scoreboard.TeamAction.CREATE, "ownerA", List.of("P")));
+        sb.unregisterTeam("copyA");
+        assertEquals("ownerA", client.get("P"));
+        assertTrue(sb.isEntryInTeam("ownerA", "P"));
+    }
 }

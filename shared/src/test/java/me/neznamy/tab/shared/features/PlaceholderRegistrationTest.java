@@ -64,6 +64,7 @@ class PlaceholderRegistrationTest {
         field(tab, TAB.class, "placeholderManager", manager);
         field(tab, TAB.class, "platform", java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
                 new Class<?>[]{Platform.class}, (o, m, args) -> {
+                    if (m.getName().equals("detectAdditionalPlaceholders")) return List.of();
                     if (m.getName().equals("registerUnknownPlaceholder"))
                         manager.registerPlayerPlaceholder((String) args[0], 500, ignored -> "default");
                     return null;
@@ -71,7 +72,8 @@ class PlaceholderRegistrationTest {
         player = allocate(Viewer.class);
         field(player, TabPlayer.class, "online", true);
         field(player, TabPlayer.class, "loaded", true);
-        field(player, TabPlayer.class, "lastPlaceholderValues", new ConcurrentHashMap<>());
+        field(player, TabPlayer.class, "lastPlaceholderReturnedValues", new ConcurrentHashMap<>());
+        field(player, TabPlayer.class, "lastPlaceholderEvaluatedValues", new ConcurrentHashMap<>());
         field(player, TabPlayer.class, "lastRelationalValues", new ConcurrentHashMap<>());
         field(tab, TAB.class, "data", new ConcurrentHashMap<>(Map.of(UUID.randomUUID(), player)));
         field(player, TabPlayer.class, "sortingData", new SortingPlayerData());
@@ -87,7 +89,7 @@ class PlaceholderRegistrationTest {
         Sorting sorting = new Sorting(new SortingConfiguration(section, true,
                 List.of("PLACEHOLDER:" + ID + ":legend,prime,default")));
         PlaceholderReference reference = manager.getPlaceholderReference(ID);
-        assertTrue(reference.getHandle().getUsedByFeatures().contains(sorting));
+        assertTrue(reference.getUsedByFeatures().contains(sorting));
         field(TAB.getInstance(), TAB.class, "onlinePlayers", new TabPlayer[]{player});
         sorting.onJoin(player);
         assertEquals("2A", player.sortingData.shortTeamName);
@@ -119,7 +121,7 @@ class PlaceholderRegistrationTest {
         assertEquals("1A", player.sortingData.shortTeamName);
     }
 
-    @Test void nestedReplacementRewiresParentsAndChildren() throws Exception {
+    @Test void nestedReplacementPreservesStableParentReferences() throws Exception {
         AtomicReference<String> rank = new AtomicReference<>("legend");
         var child = manager.registerPlayerPlaceholder("%child%", 1000, ignored -> rank.get());
         var middle = manager.registerPlayerPlaceholder(ID, 1000, ignored -> "%child%");
@@ -131,24 +133,23 @@ class PlaceholderRegistrationTest {
         assertEquals("0A", player.sortingData.shortTeamName);
         var replacement = manager.registerPlayerPlaceholder(ID, 1000, ignored -> "%child%");
         drainProcessing();
-        assertTrue(parent.getChildren().contains(replacement));
-        assertFalse(parent.getChildren().contains(middle));
-        assertTrue(child.getParents().contains(replacement));
-        assertFalse(child.getParents().contains(middle));
+        assertSame(middle.getReference(), replacement.getReference());
+        assertEquals(List.of(parent.getReference()), replacement.getReference().getParents());
+        assertEquals(List.of(replacement.getReference()), child.getReference().getParents());
         rank.set("prime");
         tick(1000);
         assertEquals("1A", player.sortingData.shortTeamName);
         assertEquals("prime", parent.parse(player));
         var newChild = manager.registerPlayerPlaceholder("%child%", 1000, ignored -> "default");
-        assertTrue(replacement.getChildren().contains(newChild));
-        assertFalse(replacement.getChildren().contains(child));
+        assertSame(child.getReference(), newChild.getReference());
+        assertEquals(List.of(replacement.getReference()), newChild.getReference().getParents());
         tick(1000);
         assertEquals("2A", player.sortingData.shortTeamName);
         // Re-registering the same object must not damage or duplicate links.
         manager.registerPlaceholder(replacement);
         drainProcessing();
-        assertEquals(List.of(newChild), replacement.getChildren());
-        assertEquals(List.of(parent), replacement.getParents());
+        assertEquals(List.of(replacement.getReference()), newChild.getReference().getParents());
+        assertEquals(List.of(parent.getReference()), replacement.getReference().getParents());
     }
 
     @ParameterizedTest
@@ -172,8 +173,7 @@ class PlaceholderRegistrationTest {
             assertEquals(value, middle.parse(player));
             assertEquals(value, parent.parse(player));
             assertEquals(i % 2 == 0 ? "1A" : "0A", player.sortingData.shortTeamName);
-            assertEquals(List.of(replacement), middle.getChildren());
-            assertEquals(List.of(middle), replacement.getParents());
+            assertEquals(List.of(middle.getReference()), replacement.getReference().getParents());
             tick(2000); // Constant server output must not be needed to invalidate ancestors.
             assertEquals(value, parent.parse(player));
         }
@@ -410,6 +410,7 @@ class PlaceholderRegistrationTest {
         public int getGamemode() { return 0; }
         public int getPing() { return 0; }
         public void sendMessage(TabComponent message) { }
+        public void setBelowNameDistance(double distance) { }
         public boolean hasPermission(String permission) { return false; }
         public Platform getPlatform() { return null; }
         public Object getPlayer() { return null; }

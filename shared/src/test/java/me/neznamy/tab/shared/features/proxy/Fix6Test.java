@@ -36,6 +36,7 @@ class Fix6Test {
         public int getGamemode() { return 0; }
         public int getPing() { return 0; }
         public void sendMessage(TabComponent message) { }
+        public void setBelowNameDistance(double distance) { }
         public boolean hasPermission(String permission) { return false; }
         public Platform getPlatform() { return null; }
         public Object getPlayer() { return null; }

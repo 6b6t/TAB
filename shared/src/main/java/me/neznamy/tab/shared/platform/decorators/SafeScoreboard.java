@@ -53,11 +53,6 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
 
     /** Teams indexed by entries */
     private final Map<String, Team> teamsByEntries = new ConcurrentHashMap<>();
-    /**
-     * [6b6t patch] Entry -> name of the team that last received it. A client keeps an entry in one team only,
-     * so this is the team the client shows the entry in (as far as this scoreboard sent it).
-     */
-    private final Map<String, String> entryOwner = new HashMap<>();
 
     /** [6b6t patch] Entry -> team it was taken away from by a later team registration */
     private final Map<String, String> displacedFrom = new HashMap<>();
@@ -160,9 +155,6 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
         }
         Team team = new Team(createTeam(name), name, prefix, suffix, visibility, collision, players, options, color);
         teams.put(name, team);
-        for (String entry : players) {
-            teamsByEntries.put(entry, team);
-        }
         trackEntries(team);
         if (frozen) return;
         registerTeam(team);
@@ -176,11 +168,13 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
             error("Tried to unregister non-existing team %s for player ", teamName);
             return;
         }
-        for (String entry : team.getPlayers()) {
-            teamsByEntries.remove(entry, team);
+        Set<Team> restoredTeams = restoreDisplacedEntries(team);
+        if (!frozen) {
+            unregisterTeam(team);
+            for (Team restored : restoredTeams) {
+                resendTeam(restored);
+            }
         }
-        if (!frozen) unregisterTeam(team);
-        restoreDisplacedEntries(team);
     }
 
     @Override
@@ -240,7 +234,7 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
             registerTeam(team);
             // [6b6t patch] keep the entry -> team model equal to what the client now shows (last registration wins)
             for (String entry : team.getPlayers()) {
-                entryOwner.put(entry, team.getName());
+                teamsByEntries.put(entry, team);
                 displacedFrom.remove(entry);
             }
         }
@@ -259,7 +253,7 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
         } finally {
             clearing = false;
         }
-        entryOwner.clear();
+        teamsByEntries.clear();
         displacedFrom.clear();
     }
 
@@ -274,9 +268,9 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
      */
     private void trackEntries(@NonNull Team team) {
         for (String entry : team.getPlayers()) {
-            String previous = entryOwner.put(entry, team.getName());
-            if (previous != null && !previous.equals(team.getName()) && teams.containsKey(previous)) {
-                displacedFrom.put(entry, previous);
+            Team previous = teamsByEntries.put(entry, team);
+            if (previous != null && previous != team && teams.containsKey(previous.getName())) {
+                displacedFrom.put(entry, previous.getName());
                 PatchStats.entryConflicts.incrementAndGet();
             } else {
                 displacedFrom.remove(entry);
@@ -292,22 +286,22 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
      *
      * @param   removed
      *          team that was just removed
+     * @return  teams to resend after the removed team is unregistered
      */
-    private void restoreDisplacedEntries(@NonNull Team removed) {
-        if (clearing) return;
+    private Set<Team> restoreDisplacedEntries(@NonNull Team removed) {
+        Set<Team> restoredTeams = new HashSet<>();
         for (String entry : removed.getPlayers()) {
-            if (!removed.getName().equals(entryOwner.get(entry))) continue; // entry is shown in another team, nothing lost
-            entryOwner.remove(entry);
+            if (!teamsByEntries.remove(entry, removed)) continue; // entry is shown in another team, nothing lost
             String back = displacedFrom.remove(entry);
-            if (back == null) continue;
+            if (clearing || back == null) continue;
             Team backTeam = teams.get(back);
             if (backTeam == null || !backTeam.getPlayers().contains(entry)) continue;
-            entryOwner.put(entry, back);
+            teamsByEntries.put(entry, backTeam);
             if (!PatchSettings.get().entryRestore) continue;
             PatchStats.entryRestored.incrementAndGet();
-            if (frozen) continue; // resend() after unfreezing registers it anyway
-            resendTeam(backTeam);
+            restoredTeams.add(backTeam);
         }
+        return restoredTeams;
     }
 
     /**
@@ -323,8 +317,8 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
     public synchronized boolean isEntryInTeam(@NonNull String teamName, @NonNull String entry) {
         Team team = teams.get(teamName);
         if (team == null || !team.getPlayers().contains(entry)) return false;
-        String owner = entryOwner.get(entry);
-        return owner == null || owner.equals(teamName);
+        Team owner = teamsByEntries.get(entry);
+        return owner == null || owner == team;
     }
 
     /**
@@ -364,7 +358,7 @@ public abstract class SafeScoreboard<T extends TabPlayer> implements Scoreboard 
         Team team = teams.get(teamName);
         if (team == null) return false;
         for (String entry : team.getPlayers()) {
-            entryOwner.put(entry, teamName);
+            teamsByEntries.put(entry, team);
             displacedFrom.remove(entry);
         }
         if (!frozen) resendTeam(team);

@@ -84,7 +84,8 @@ class BridgeProxyTest {
         field(p, TabPlayer.class, "nickname", name);
         field(p, TabPlayer.class, "online", true);
         field(p, TabPlayer.class, "loaded", false); // values are stored, no feature refresh in this fixture
-        field(p, TabPlayer.class, "lastPlaceholderValues", new ConcurrentHashMap<>());
+        field(p, TabPlayer.class, "lastPlaceholderReturnedValues", new ConcurrentHashMap<>());
+        field(p, TabPlayer.class, "lastPlaceholderEvaluatedValues", new ConcurrentHashMap<>());
         field(p, TabPlayer.class, "lastRelationalValues", new ConcurrentHashMap<>());
         field(p, TabPlayer.class, "expansionData", new ExpansionData(p));
         field(p, ProxyTabPlayer.class, "permissions", new HashMap<>());
@@ -136,6 +137,7 @@ class BridgeProxyTest {
         field(tab, TAB.class, "groupManager", groups);
         field(tab, TAB.class, "platform", java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
                 new Class<?>[]{Platform.class}, (o, m, args) -> {
+                    if (m.getName().equals("detectAdditionalPlaceholders")) return List.of();
                     if (m.getName().equals("registerUnknownPlaceholder")) manager.registerPlayerPlaceholder((String) args[0], -1, ignored -> "");
                     if (m.getName().equals("isProxy")) return true;
                     if (m.getName().equals("getCommand")) return "btab";
