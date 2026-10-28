@@ -8,7 +8,6 @@ import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.data.Server;
 import me.neznamy.tab.shared.features.proxy.ProxyPlayer;
 import me.neznamy.tab.shared.features.proxy.ProxySupport;
-import me.neznamy.tab.shared.features.proxy.QueuedData;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.UUID;
@@ -40,16 +39,35 @@ public class ServerSwitch extends ProxyMessage {
         out.writeUTF(newServer.getName());
     }
 
+
+    /** [6b6t patch] Player this message is about */
+    @Override
+    @NotNull
+    public UUID getSubjectId() {
+        return playerId;
+    }
+
+    @Override
+    public void queue(@NotNull ProxySupport proxySupport) {
+        me.neznamy.tab.shared.features.proxy.QueuedData data = proxySupport.queuedFor(playerId, getSourceProxy());
+        if (getSequence() >= 0 && getSequence() < data.getServerSequence()) return;
+        data.setServer(newServer);
+        data.setServerSequence(getSequence() < 0 ? Long.MAX_VALUE : getSequence());
+    }
+
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer target = proxySupport.getProxyPlayers().get(playerId);
         if (target == null) {
             unknownPlayer(playerId.toString(), "server switch");
-            QueuedData data = proxySupport.getQueuedData().computeIfAbsent(playerId, k -> new QueuedData());
-            data.setServer(newServer);
+            queue(proxySupport);
             return;
         }
+        target.setStateSequence(getSequence() < 0 ? Long.MAX_VALUE : Math.max(target.getStateSequence(), getSequence()));
         target.setServer(newServer);
+        target.setLastChangeMillis(System.currentTimeMillis()); // [6b6t patch] team audit grace
         TAB.getInstance().getFeatureManager().onServerSwitch(target);
+        // [6b6t patch 6b6t.8] relational values in his format depend on whether a viewer shares his server: show again
+        me.neznamy.tab.shared.proxy.RemoteRelational.refreshRemote(target.getUniqueId());
     }
 }

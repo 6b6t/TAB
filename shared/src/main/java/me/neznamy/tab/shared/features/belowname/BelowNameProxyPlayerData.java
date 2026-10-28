@@ -67,15 +67,28 @@ public class BelowNameProxyPlayerData extends ProxyMessage {
         out.writeUTF(fancyValue);
     }
 
+    /** [6b6t patch] Player this message is about */
+    @Override
+    @NotNull
+    public UUID getSubjectId() {
+        return playerId;
+    }
+
+    /** [6b6t patch] Stores the data as queued data of the sending proxy */
+    @Override
+    public void queue(@NotNull ProxySupport proxySupport) {
+        QueuedData data = proxySupport.queuedFor(playerId, getSourceProxy());
+        if (data.getBelowname() == null || data.getBelowname().id < id)  {
+            data.setBelowname(this);
+        }
+    }
+
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer target = proxySupport.getProxyPlayers().get(playerId);
         if (target == null) {
             unknownPlayer(playerId.toString(), "belowname objective update");
-            QueuedData data = proxySupport.getQueuedData().computeIfAbsent(playerId, k -> new QueuedData());
-            if (data.getBelowname() == null || data.getBelowname().id < id)  {
-                data.setBelowname(this);
-            }
+            queue(proxySupport);
             return;
         }
         if (target.getBelowname() != null && target.getBelowname().id > id) {

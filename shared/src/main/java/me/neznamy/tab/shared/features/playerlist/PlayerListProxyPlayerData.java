@@ -12,7 +12,9 @@ import me.neznamy.tab.shared.features.proxy.ProxySupport;
 import me.neznamy.tab.shared.features.proxy.QueuedData;
 import me.neznamy.tab.shared.features.proxy.message.ProxyMessage;
 import me.neznamy.tab.shared.platform.TabPlayer;
+import me.neznamy.tab.shared.proxy.RemoteRelational;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.UUID;
 
@@ -71,6 +73,40 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
         disabled = in.readBoolean();
     }
 
+    /**
+     * [6b6t patch 6b6t.8] Whether the format contains relational placeholders, which are filled in per viewer.
+     *
+     * @return  {@code true} if the format needs a viewer
+     */
+    public boolean isRelational() {
+        return prefix.contains("%rel_") || name.contains("%rel_") || suffix.contains("%rel_");
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Format as this viewer sees it. Upstream showed relational placeholders raw to every viewer
+     * on this proxy; they are now filled in with the values the viewer's bridge sent (see {@link RemoteRelational}).
+     *
+     * @param   viewer
+     *          viewer, {@code null} = no viewer (relational placeholders get their empty output)
+     * @return  format component
+     */
+    @NotNull
+    public TabComponent getFormatComponent(@Nullable TabPlayer viewer) {
+        if (!isRelational()) return formatComponent;
+        return feature.getCache().get(RemoteRelational.render(prefix + name + suffix, viewer, playerId, player));
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Viewer-independent format; relational placeholders never show raw.
+     * Callers that know the viewer use {@link #getFormatComponent(TabPlayer)}.
+     *
+     * @return  format component
+     */
+    @NotNull
+    public TabComponent getFormatComponent() {
+        return getFormatComponent(null);
+    }
+
     @Override
     public void write(@NotNull ByteArrayDataOutput out) {
         out.writeLong(id);
@@ -82,15 +118,28 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
         out.writeBoolean(disabled);
     }
 
+    /** [6b6t patch] Player this message is about */
+    @Override
+    @NotNull
+    public UUID getSubjectId() {
+        return playerId;
+    }
+
+    /** [6b6t patch] Stores the data as queued data of the sending proxy */
+    @Override
+    public void queue(@NotNull ProxySupport proxySupport) {
+        QueuedData data = proxySupport.queuedFor(playerId, getSourceProxy());
+        if (data.getTabFormat() == null || data.getTabFormat().id < id)  {
+            data.setTabFormat(this);
+        }
+    }
+
     @Override
     public void process(@NotNull ProxySupport proxySupport) {
         ProxyPlayer target = proxySupport.getProxyPlayers().get(playerId);
         if (target == null) {
             unknownPlayer(playerId.toString(), "tablist format update");
-            QueuedData data = proxySupport.getQueuedData().computeIfAbsent(playerId, k -> new QueuedData());
-            if (data.getTabFormat() == null || data.getTabFormat().id < id)  {
-                data.setTabFormat(this);
-            }
+            queue(proxySupport);
             return;
         }
         if (target.getTabFormat() != null && target.getTabFormat().id > id) {
@@ -100,9 +149,14 @@ public class PlayerListProxyPlayerData extends ProxyMessage {
         PlayerListProxyPlayerData oldData = target.getTabFormat();
 
         target.setTabFormat(this);
+        // [6b6t patch 6b6t.4] Connected resends can repair viewer state even when the cached
+        // content is unchanged (including when auditing is disabled). Only dedupe disconnected copies.
+        if (target.getConnectionState() != ProxyPlayer.ConnectionState.CONNECTED
+                && oldData != null && oldData.disabled == disabled && oldData.prefix.equals(prefix)
+                && oldData.name.equals(name) && oldData.suffix.equals(suffix)) return;
         if (target.getConnectionState() == ProxyPlayer.ConnectionState.CONNECTED) {
             if (disabled) {
-                if (!oldData.disabled) {
+                if (oldData == null || !oldData.disabled) { // [6b6t patch] null-safe (copy without earlier format)
                     for (TabPlayer viewer : TAB.getInstance().getOnlinePlayers()) {
                         viewer.getTabList().updateDisplayName(target.getTablistId(), null);
                     }

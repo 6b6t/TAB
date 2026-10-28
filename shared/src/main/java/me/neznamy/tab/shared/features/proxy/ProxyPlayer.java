@@ -21,6 +21,9 @@ import java.util.UUID;
 @Setter
 public class ProxyPlayer {
 
+    /** Highest origin sequence of server/vanish state; legacy updates block snapshot refresh. */
+    private long stateSequence = -1;
+
     /** Real UUID of the player */
     @NotNull
     private final UUID uniqueId;
@@ -61,15 +64,22 @@ public class ProxyPlayer {
 
     /** Tablist display name */
     @Nullable
-    private PlayerListProxyPlayerData tabFormat;
+    private volatile PlayerListProxyPlayerData tabFormat;
 
     /** Nametag data */
     @Nullable
-    private NameTagProxyPlayerData nametag;
+    private volatile NameTagProxyPlayerData nametag;
 
     /** Player's connection state */
     @NotNull
     private ConnectionState connectionState = ConnectionState.QUEUED;
+
+    /** [6b6t patch] Id of the proxy that sent the join of this copy ({@code null} if unknown) */
+    @Nullable
+    private String sourceProxy;
+
+    /** [6b6t patch] Last join / state change / server switch of this copy, the team audit skips fresh copies */
+    private volatile long lastChangeMillis = System.currentTimeMillis();
 
     /**
      * Constructs new instance with given parameters.
@@ -108,7 +118,20 @@ public class ProxyPlayer {
      */
     @NotNull
     public TabList.Entry asEntry() {
-        return new TabList.Entry(uniqueId, nickname, skin, true, 0, 0, tabFormat == null ? null : tabFormat.getFormatComponent(), 0, true);
+        return asEntry(null);
+    }
+
+    /**
+     * [6b6t patch 6b6t.8] Creates a new entry for this player as the viewer sees it (relational placeholders of the
+     * format filled in for that viewer).
+     *
+     * @param   viewer
+     *          viewer the entry is for, {@code null} if unknown
+     * @return  TabList.Entry representing this player
+     */
+    @NotNull
+    public TabList.Entry asEntry(@Nullable me.neznamy.tab.shared.platform.TabPlayer viewer) {
+        return new TabList.Entry(uniqueId, nickname, skin, true, 0, 0, tabFormat == null ? null : tabFormat.getFormatComponent(viewer), 0, true);
     }
 
     /**

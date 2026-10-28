@@ -18,6 +18,9 @@ import org.jetbrains.annotations.Nullable;
 @Setter
 public class QueuedData {
 
+    private long serverSequence = -1;
+    private long vanishSequence = -1;
+
     /** Belowname data */
     @Nullable
     private BelowNameProxyPlayerData belowname;
@@ -36,6 +39,16 @@ public class QueuedData {
 
     /** Whether player is vanished or not */
     private boolean vanished;
+
+    /** [6b6t patch] Whether {@link #vanished} was actually received (upstream applied the default {@code false} too) */
+    private boolean vanishedSet;
+
+    /** [6b6t patch] Proxy that sent this data; a join from another proxy must not pick it up */
+    @Nullable
+    private String sourceProxy;
+
+    /** [6b6t patch r1] Creation time, entries older than the tombstone TTL are expired by the maintenance task */
+    private final long createdAt = System.currentTimeMillis();
 
     /** Name of server the player is connected to */
     @NotNull

@@ -19,6 +19,7 @@ public class Invisible implements IncomingMessage {
 
     @Override
     public void process(@NotNull ProxyTabPlayer player) {
+        player.noteBridgeFlagUpdate(ProxyTabPlayer.FLAG_INVISIBLE); // [6b6t patch 6b6t.8]
         player.setInvisibilityPotion(invisible);
     }
 }

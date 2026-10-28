@@ -19,6 +19,7 @@ public class Disguised implements IncomingMessage {
 
     @Override
     public void process(@NotNull ProxyTabPlayer player) {
+        player.noteBridgeFlagUpdate(ProxyTabPlayer.FLAG_DISGUISE); // [6b6t patch 6b6t.8]
         player.setDisguised(disguised);
     }
 }

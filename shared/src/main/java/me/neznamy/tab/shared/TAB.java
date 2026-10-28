@@ -192,6 +192,10 @@ public class TAB extends TabAPI {
     public String load() {
         try {
             long time = System.currentTimeMillis();
+            // [6b6t patch] optional switches in plugins/tab/6b6t-patch.properties (never created or rewritten)
+            for (String warning : me.neznamy.tab.shared.patch6b6t.PatchSettings.load(dataFolder)) {
+                platform.logWarn(new TabTextComponent("[TAB-6b6t] " + warning, TabTextColor.RED));
+            }
             cpu = new CpuManager();
             dataManager = new DataManager();
             configuration = new Configs();
@@ -202,12 +206,23 @@ public class TAB extends TabAPI {
             platform.registerPlaceholders();
             featureManager.loadFeaturesFromConfig();
             pluginDisabled = false;
+            // [6b6t patch 6b6t.8] watch bridge requests from the first player on
+            me.neznamy.tab.shared.patch6b6t.BridgeRequests<me.neznamy.tab.shared.proxy.ProxyTabPlayer> bridgeRequests =
+                    platform instanceof me.neznamy.tab.shared.proxy.ProxyPlatform
+                            ? me.neznamy.tab.shared.patch6b6t.BridgeRequests.begin(me.neznamy.tab.shared.proxy.ProxyTabPlayer.BRIDGE_PORT) : null;
+            startPatchStatsLine(); // [6b6t patch] before the players, so the line counts what their load does (bridge-carried)
             platform.loadPlayers();
+            if (bridgeRequests != null) me.neznamy.tab.shared.proxy.BridgeCarry.applyCarriedValues();
             command = new TabCommand();
             featureManager.load();
             for (TabPlayer p : onlinePlayers) p.markAsLoaded(false);
             if (eventBus != null) eventBus.fire(TabLoadEventImpl.getInstance());
             cpu.enable();
+            if (bridgeRequests != null) {
+                me.neznamy.tab.shared.patch6b6t.BridgeRequests.clearCarry();
+                cpu.getProcessingThread().repeatTask(new me.neznamy.tab.shared.cpu.TimedCaughtTask(cpu, bridgeRequests::tick,
+                        "6b6t patch", "Bridge requests"), 250);
+            }
             configHelper.startup().printWarnCount();
             platform.logInfo(new TabTextComponent("Enabled in " + (System.currentTimeMillis()-time) + "ms", TabTextColor.GREEN));
             return configuration.getMessages().getReloadSuccess();
@@ -229,6 +244,23 @@ public class TAB extends TabAPI {
     }
 
     /**
+     * [6b6t patch] Prints one "[TAB-6b6t] Nm: ..." counter line every N minutes (also when everything is 0,
+     * so the alert script can use it as a heartbeat). Runs on the Processing Thread.
+     */
+    private void startPatchStatsLine() {
+        int minutes = me.neznamy.tab.shared.patch6b6t.PatchSettings.get().statsIntervalMinutes;
+        if (minutes <= 0) return;
+        me.neznamy.tab.shared.patch6b6t.PatchStats.deltaLine(minutes, 0, 0); // reset the baseline after a reload
+        cpu.getProcessingThread().repeatTask(new me.neznamy.tab.shared.cpu.TimedCaughtTask(cpu, () -> {
+            me.neznamy.tab.shared.features.proxy.ProxySupport proxy = featureManager.getFeature(TabConstants.Feature.PROXY_SUPPORT);
+            int remote = proxy == null ? 0 : proxy.getProxyPlayers().size();
+            me.neznamy.tab.shared.patch6b6t.BridgeRequests<?> bridge = me.neznamy.tab.shared.patch6b6t.BridgeRequests.get();
+            platform.logInfo(new TabTextComponent(me.neznamy.tab.shared.patch6b6t.PatchStats.deltaLine(minutes, onlinePlayers.length, remote)
+                    + (bridge == null ? "" : " bridge-waiting=" + bridge.waiting()), (TabTextColor) null));
+        }, "6b6t patch", "Stats line"), minutes * 60_000);
+    }
+
+    /**
      * Unloads all features by sending clear packets, resets variables
      * and cancels all tasks.
      */
@@ -236,6 +268,8 @@ public class TAB extends TabAPI {
         if (pluginDisabled) return;
         try {
             long time = System.currentTimeMillis();
+            // [6b6t patch 6b6t.8] keep bridge values for the next load (btab reload), see BridgeRequests
+            if (platform instanceof me.neznamy.tab.shared.proxy.ProxyPlatform) me.neznamy.tab.shared.proxy.BridgeCarry.snapshot(onlinePlayers);
             if (configuration.getMysql() != null) configuration.getMysql().closeConnection();
             featureManager.unload();
             platform.logInfo(new TabTextComponent("Disabled in " + (System.currentTimeMillis()-time) + "ms", TabTextColor.GREEN));
@@ -250,6 +284,7 @@ public class TAB extends TabAPI {
      */
     private void kill() {
         pluginDisabled = true;
+        me.neznamy.tab.shared.patch6b6t.BridgeRequests.end(); // [6b6t patch 6b6t.8]
         data.clear();
         playersByName.clear();
         playersByTabListId.clear();
