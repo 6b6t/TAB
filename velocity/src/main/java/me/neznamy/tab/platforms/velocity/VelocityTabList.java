@@ -151,6 +151,7 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
                 }
             }
         } else if (packet instanceof UpsertPlayerInfoPacket update) {
+            int hardMutedEntriesUnlisted = 0;
             for (UpsertPlayerInfoPacket.Entry item : update.getEntries()) {
                 if (update.getActions().contains(UpsertPlayerInfoPacket.Action.UPDATE_DISPLAY_NAME)) {
                     TabComponent forcedDisplayName = getForcedDisplayNames().get(item.getProfileId());
@@ -178,11 +179,17 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
                         && (update.getActions().contains(UpsertPlayerInfoPacket.Action.ADD_PLAYER)
                                 || update.getActions().contains(UpsertPlayerInfoPacket.Action.UPDATE_LISTED))) {
                     item.setListed(false);
+                    hardMutedEntriesUnlisted++;
                 }
                 if (update.getActions().contains(UpsertPlayerInfoPacket.Action.ADD_PLAYER)) {
                     onClientAdd(item.getProfileId()); // [6b6t patch 6b6t.7]
                     TAB.getInstance().getFeatureManager().onEntryAdd(player, item.getProfileId(), item.getProfile().getName());
                 }
+            }
+            if (hardMutedEntriesUnlisted > 0) {
+                ((VelocityPlatform) TAB.getInstance().getPlatform()).getPlugin().getLogger().debug(
+                        "TAB hard-mute: unlisted {} player-info entr(y/ies) in outgoing packet",
+                        hardMutedEntriesUnlisted);
             }
         } else if (packet instanceof RemovePlayerInfoPacket remove) {
             onClientRemove(remove.getProfilesToRemove()); // [6b6t patch 6b6t.7]

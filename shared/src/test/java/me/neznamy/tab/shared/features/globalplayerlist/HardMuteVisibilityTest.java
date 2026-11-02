@@ -33,4 +33,16 @@ class HardMuteVisibilityTest {
         HardMuteStatus.setMuted(player, false);
         assertFalse(HardMuteStatus.isMuted(player));
     }
+
+    @Test
+    void viewerJoiningAfterMuteStillHidesTargetWhileTargetSeesSelf() {
+        UUID muted = UUID.randomUUID();
+        HardMuteStatus.setMuted(muted, true);
+
+        UUID sameWorkerObserverJoiningLater = UUID.randomUUID();
+        UUID otherWorkerObserverJoiningLater = UUID.randomUUID();
+        assertFalse(HardMuteStatus.shouldShow(sameWorkerObserverJoiningLater, muted));
+        assertFalse(HardMuteStatus.shouldShow(otherWorkerObserverJoiningLater, muted));
+        assertTrue(HardMuteStatus.shouldShow(muted, muted));
+    }
 }

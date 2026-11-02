@@ -19,13 +19,13 @@ import java.util.concurrent.TimeUnit;
 /** Reads hard-mute state from AsyncChat's authoritative table using read-only credentials. */
 final class HardMuteStatusReader implements AutoCloseable {
 
-    private static final long REFRESH_SECONDS = 2;
+    private static final long REFRESH_SECONDS = 1;
     private final VelocityTAB plugin;
     private final Logger logger;
     private HikariDataSource dataSource;
     private ScheduledTask task;
     private boolean warningLogged;
-    private Set<UUID> previous = Collections.emptySet();
+    private volatile Set<UUID> previous = Collections.emptySet();
 
     HardMuteStatusReader(VelocityTAB plugin) {
         this.plugin = plugin;
@@ -105,21 +105,54 @@ final class HardMuteStatusReader implements AutoCloseable {
         changed.removeIf(id -> previous.contains(id) == current.contains(id));
         previous = new HashSet<>(current);
         for (UUID id : changed) HardMuteStatus.setMuted(id, current.contains(id));
+        if (!changed.isEmpty()) {
+            logger.info("TAB hard-mute: {} player(s) hidden", current.size());
+        }
         if (TAB.getInstance() == null || TAB.getInstance().isPluginDisabled()) return;
         TAB.getInstance().getCpu().runMeasuredTask("HardMute", "refresh", () -> {
+            // Reconcile the full snapshot, not only changed UUIDs. A viewer may join or switch
+            // after a mute was recorded and therefore never receive its transition packet.
+            for (var velocityPlayer : plugin.getServer().getAllPlayers()) {
+                reconcileViewer(velocityPlayer, current);
+            }
             for (UUID id : changed) {
-                for (var velocityPlayer : plugin.getServer().getAllPlayers()) {
-                    var viewer = TAB.getInstance().getPlayer(velocityPlayer.getUniqueId());
-                    if (viewer == null || viewer.getUniqueId().equals(id)) continue;
-                    if (viewer.getTabList().containsEntry(id)) {
-                        viewer.getTabList().updateListed(id, !current.contains(id));
-                    }
-                }
                 GlobalPlayerList global = TAB.getInstance().getFeatureManager()
                         .getFeature(TabConstants.Feature.GLOBAL_PLAYER_LIST);
-                if (global != null) global.onHardMuteStatusChange(id, current.contains(id));
+                boolean muted = current.contains(id);
+                if (global != null) global.onHardMuteStatusChange(id, muted);
+                // The feature callback handles normal/global list entries, but the backend
+                // snapshot can contain an entry which has already been marked unlisted by a
+                // previous reconciliation. Restore that existing entry directly on unmute;
+                // never remove/re-add it (which would flicker player entities and skins).
+                if (!muted) {
+                    for (var velocityPlayer : plugin.getServer().getAllPlayers()) {
+                        if (velocityPlayer.getUniqueId().equals(id)) continue;
+                        var viewer = TAB.getInstance().getPlayer(velocityPlayer.getUniqueId());
+                        var target = TAB.getInstance().getPlayer(id);
+                        if (viewer != null && target != null && viewer.getTabList().containsEntry(id)
+                                && (global == null || global.shouldSee(viewer, target))) {
+                            viewer.getTabList().updateListed(id, true);
+                        }
+                    }
+                }
             }
         });
+    }
+
+    void reconcileViewer(com.velocitypowered.api.proxy.Player velocityPlayer) {
+        Set<UUID> current = previous;
+        if (TAB.getInstance() == null || TAB.getInstance().isPluginDisabled()) return;
+        reconcileViewer(velocityPlayer, current);
+    }
+
+    private void reconcileViewer(com.velocitypowered.api.proxy.Player velocityPlayer, Set<UUID> muted) {
+        var viewer = TAB.getInstance().getPlayer(velocityPlayer.getUniqueId());
+        if (viewer == null) return;
+        for (UUID id : muted) {
+            if (!viewer.getUniqueId().equals(id) && viewer.getTabList().containsEntry(id)) {
+                viewer.getTabList().updateListed(id, false);
+            }
+        }
     }
 
     private void warnOnce(String message) {
