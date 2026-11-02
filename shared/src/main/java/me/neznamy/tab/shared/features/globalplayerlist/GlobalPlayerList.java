@@ -118,13 +118,15 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
             if (viewer.getUniqueId().equals(playerId)) continue;
             TabPlayer localTarget = TAB.getInstance().getPlayer(playerId);
             if (muted) {
-                viewer.getTabList().removeEntry(playerId);
+                if (viewer.getTabList().containsEntry(playerId)) viewer.getTabList().updateListed(playerId, false);
             } else if (localTarget != null && shouldSee(viewer, localTarget)) {
-                viewer.getTabList().addEntry(getAddInfoData(localTarget, viewer));
+                if (viewer.getTabList().containsEntry(playerId)) viewer.getTabList().updateListed(playerId, true);
+                else viewer.getTabList().addEntry(getAddInfoData(localTarget, viewer));
             } else if (proxy != null) {
                 ProxyPlayer remoteTarget = proxy.getProxyPlayers().get(playerId);
                 if (remoteTarget != null && shouldSee(viewer, remoteTarget)) {
-                    viewer.getTabList().addEntry(remoteTarget.asEntry());
+                    if (viewer.getTabList().containsEntry(playerId)) viewer.getTabList().updateListed(playerId, true);
+                    else viewer.getTabList().addEntry(remoteTarget.asEntry());
                 }
             }
         }

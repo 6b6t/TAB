@@ -50,6 +50,7 @@ final class HardMuteStatusReader implements AutoCloseable {
             return;
         }
         try {
+            Class.forName("com.mysql.cj.jdbc.Driver");
             HikariConfig config = new HikariConfig();
             config.setPoolName("TAB-HardMute-Pool");
             config.setJdbcUrl(
@@ -62,14 +63,15 @@ final class HardMuteStatusReader implements AutoCloseable {
             config.setConnectionTimeout(2_000);
             config.setInitializationFailTimeout(-1);
             dataSource = new HikariDataSource(config);
-        } catch (RuntimeException exception) {
+        } catch (ReflectiveOperationException | RuntimeException exception) {
             warnOnce("AsyncChat database settings could not initialize; TAB hard-mute filtering is disabled.");
             return;
         }
+        refresh();
         task = plugin.getServer().getScheduler().buildTask(plugin, this::refresh)
+                .delay(REFRESH_SECONDS, TimeUnit.SECONDS)
                 .repeat(REFRESH_SECONDS, TimeUnit.SECONDS)
                 .schedule();
-        refresh();
     }
 
     private static String env(String suffix) {
@@ -77,14 +79,13 @@ final class HardMuteStatusReader implements AutoCloseable {
         return value == null || value.isBlank() ? null : value;
     }
 
-    private void refresh() {
+    private synchronized void refresh() {
         HikariDataSource source = dataSource;
         if (source == null || source.isClosed()) return;
         Set<UUID> current = new HashSet<>();
         try (var connection = source.getConnection();
                 var statement = connection.prepareStatement(
-                        "SELECT player_uuid FROM asyncchat_uuid_mutes WHERE hard_mute = TRUE AND expires_at > ?")) {
-            statement.setLong(1, System.currentTimeMillis());
+                        "SELECT player_uuid FROM asyncchat_uuid_mutes WHERE hard_mute = TRUE")) {
             try (var rows = statement.executeQuery()) {
                 while (rows.next()) {
                     try {
@@ -105,11 +106,20 @@ final class HardMuteStatusReader implements AutoCloseable {
         previous = new HashSet<>(current);
         for (UUID id : changed) HardMuteStatus.setMuted(id, current.contains(id));
         if (TAB.getInstance() == null || TAB.getInstance().isPluginDisabled()) return;
-        GlobalPlayerList global = TAB.getInstance().getFeatureManager()
-                .getFeature(TabConstants.Feature.GLOBAL_PLAYER_LIST);
-        for (UUID id : changed) {
-            if (global != null) global.onHardMuteStatusChange(id, current.contains(id));
-        }
+        TAB.getInstance().getCpu().runMeasuredTask("HardMute", "refresh", () -> {
+            for (UUID id : changed) {
+                for (var velocityPlayer : plugin.getServer().getAllPlayers()) {
+                    var viewer = TAB.getInstance().getPlayer(velocityPlayer.getUniqueId());
+                    if (viewer == null || viewer.getUniqueId().equals(id)) continue;
+                    if (viewer.getTabList().containsEntry(id)) {
+                        viewer.getTabList().updateListed(id, !current.contains(id));
+                    }
+                }
+                GlobalPlayerList global = TAB.getInstance().getFeatureManager()
+                        .getFeature(TabConstants.Feature.GLOBAL_PLAYER_LIST);
+                if (global != null) global.onHardMuteStatusChange(id, current.contains(id));
+            }
+        });
     }
 
     private void warnOnce(String message) {

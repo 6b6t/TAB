@@ -129,10 +129,7 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
     @NotNull
     public Object onPacketSend(@NonNull Object packet) {
         if (packet instanceof LegacyPlayerListItemPacket listItem) {
-            if (listItem.getAction() == ADD_PLAYER) {
-                listItem.getItems().removeIf(item ->
-                        !HardMuteStatus.shouldShow(player.getUniqueId(), item.getUuid()));
-            }
+            // Legacy clients need PlayerInfo to spawn the entity; leave their entries intact to preserve gameplay.
             for (LegacyPlayerListItemPacket.Item item : listItem.getItems()) {
                 if (listItem.getAction() == UPDATE_DISPLAY_NAME || listItem.getAction() == ADD_PLAYER) {
                     TabComponent forcedDisplayName = getForcedDisplayNames().get(item.getUuid());
