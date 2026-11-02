@@ -10,6 +10,7 @@ import com.velocitypowered.proxy.protocol.packet.chat.ComponentHolder;
 import lombok.NonNull;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.chat.component.TabComponent;
+import me.neznamy.tab.shared.features.globalplayerlist.HardMuteStatus;
 import me.neznamy.tab.shared.features.layout.LayoutManagerImpl;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import me.neznamy.tab.shared.platform.decorators.TrackedTabList;
@@ -128,6 +129,10 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
     @NotNull
     public Object onPacketSend(@NonNull Object packet) {
         if (packet instanceof LegacyPlayerListItemPacket listItem) {
+            if (listItem.getAction() == ADD_PLAYER) {
+                listItem.getItems().removeIf(item ->
+                        !HardMuteStatus.shouldShow(player.getUniqueId(), item.getUuid()));
+            }
             for (LegacyPlayerListItemPacket.Item item : listItem.getItems()) {
                 if (listItem.getAction() == UPDATE_DISPLAY_NAME || listItem.getAction() == ADD_PLAYER) {
                     TabComponent forcedDisplayName = getForcedDisplayNames().get(item.getUuid());
@@ -170,6 +175,12 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
                     if (allPlayersHidden && !LayoutManagerImpl.UUIDS_SET.contains(item.getProfileId())) { // Filter out layout entries
                         item.setListed(false);
                     }
+                }
+                if (item.getProfileId() != null
+                        && !HardMuteStatus.shouldShow(player.getUniqueId(), item.getProfileId())
+                        && (update.getActions().contains(UpsertPlayerInfoPacket.Action.ADD_PLAYER)
+                                || update.getActions().contains(UpsertPlayerInfoPacket.Action.UPDATE_LISTED))) {
+                    item.setListed(false);
                 }
                 if (update.getActions().contains(UpsertPlayerInfoPacket.Action.ADD_PLAYER)) {
                     onClientAdd(item.getProfileId()); // [6b6t patch 6b6t.7]
