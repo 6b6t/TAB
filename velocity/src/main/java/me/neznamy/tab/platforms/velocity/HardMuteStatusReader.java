@@ -9,9 +9,14 @@ import me.neznamy.tab.shared.features.globalplayerlist.GlobalPlayerList;
 import me.neznamy.tab.shared.features.globalplayerlist.HardMuteStatus;
 import org.slf4j.Logger;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Locale;
+import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -20,6 +25,9 @@ import java.util.concurrent.TimeUnit;
 final class HardMuteStatusReader implements AutoCloseable {
 
     private static final long REFRESH_SECONDS = 1;
+    /** Fallback when the environment has no settings: keys host, port, database, username, password. */
+    static final Path SETTINGS_FILE = Path.of("plugins", "tab", "hardmute-db.properties");
+    private final Properties fileSettings = loadSettings(SETTINGS_FILE);
     private final VelocityTAB plugin;
     private final Logger logger;
     private HikariDataSource dataSource;
@@ -33,17 +41,18 @@ final class HardMuteStatusReader implements AutoCloseable {
     }
 
     void start() {
-        String host = env("HOST");
-        String database = env("DATABASE");
-        String username = env("USERNAME");
-        String password = env("PASSWORD");
+        String host = setting("HOST");
+        String database = setting("DATABASE");
+        String username = setting("USERNAME");
+        String password = setting("PASSWORD");
         if (host == null || database == null || username == null || password == null) {
             warnOnce("AsyncChat database settings are unavailable; TAB hard-mute filtering is disabled.");
             return;
         }
         int port;
         try {
-            port = Integer.parseInt(System.getenv().getOrDefault("CONFIG_ASYNCCHAT_DATABASE_PORT", "3306"));
+            String portSetting = setting("PORT");
+            port = Integer.parseInt(portSetting == null ? "3306" : portSetting);
             if (port < 1 || port > 65535) throw new NumberFormatException();
         } catch (NumberFormatException exception) {
             warnOnce("AsyncChat database port is invalid; TAB hard-mute filtering is disabled.");
@@ -74,9 +83,21 @@ final class HardMuteStatusReader implements AutoCloseable {
                 .schedule();
     }
 
-    private static String env(String suffix) {
+    private String setting(String suffix) {
         String value = System.getenv("CONFIG_ASYNCCHAT_DATABASE_" + suffix);
-        return value == null || value.isBlank() ? null : value;
+        if (value == null || value.isBlank()) value = fileSettings.getProperty(suffix.toLowerCase(Locale.ROOT));
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    static Properties loadSettings(Path file) {
+        Properties properties = new Properties();
+        if (!Files.isRegularFile(file)) return properties;
+        try (var reader = Files.newBufferedReader(file)) {
+            properties.load(reader);
+        } catch (IOException | IllegalArgumentException exception) {
+            properties.clear();
+        }
+        return properties;
     }
 
     private synchronized void refresh() {
