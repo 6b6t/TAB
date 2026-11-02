@@ -66,11 +66,15 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
                 if (onlinePlayers == null) return "0"; // Not loaded yet
                 int count = 0;
                 for (TabPlayer player : onlinePlayers.getPlayers()) {
-                    if (matchesAnyPattern(player.server.getName(), entry.getValue()) && !player.isVanished()) count++;
+                    if (matchesAnyPattern(player.server.getName(), entry.getValue())
+                            && !player.isVanished()
+                            && !HardMuteStatus.isMuted(player.getUniqueId())) count++;
                 }
                 if (proxy != null) {
                     for (ProxyPlayer player : proxy.getProxyPlayers().values()) {
-                        if (matchesAnyPattern(player.server.getName(), entry.getValue()) && !player.isVanished()) count++;
+                        if (matchesAnyPattern(player.server.getName(), entry.getValue())
+                                && !player.isVanished()
+                                && !HardMuteStatus.isMuted(player.getUniqueId())) count++;
                     }
                 }
                 return PerformanceUtil.toString(count);
