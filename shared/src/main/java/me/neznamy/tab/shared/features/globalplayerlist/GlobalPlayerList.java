@@ -66,11 +66,15 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
                 if (onlinePlayers == null) return "0"; // Not loaded yet
                 int count = 0;
                 for (TabPlayer player : onlinePlayers.getPlayers()) {
-                    if (matchesAnyPattern(player.server.getName(), entry.getValue()) && !player.isVanished()) count++;
+                    if (matchesAnyPattern(player.server.getName(), entry.getValue())
+                            && !player.isVanished()
+                            && !HardMuteStatus.isMuted(player.getUniqueId())) count++;
                 }
                 if (proxy != null) {
                     for (ProxyPlayer player : proxy.getProxyPlayers().values()) {
-                        if (matchesAnyPattern(player.server.getName(), entry.getValue()) && !player.isVanished()) count++;
+                        if (matchesAnyPattern(player.server.getName(), entry.getValue())
+                                && !player.isVanished()
+                                && !HardMuteStatus.isMuted(player.getUniqueId())) count++;
                     }
                 }
                 return PerformanceUtil.toString(count);
@@ -107,7 +111,29 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
     public boolean shouldSee(@NotNull TabPlayer viewer, @NotNull TabPlayer displayed) {
         // [6b6t patch 6b6t.3] bots hidden for viewers who chose so (viewer flag first: one volatile read for everyone else)
         if (viewer.botFlags.hidesBots() && botFilter.hides(true, viewer.server != displayed.server, displayed.botFlags.isBot())) return false;
-        return viewer.server.canSee(displayed.server) && viewer.canSee(displayed);
+        return viewer.server.canSee(displayed.server)
+                && viewer.canSee(displayed)
+                && HardMuteStatus.shouldShow(viewer.getUniqueId(), displayed.getUniqueId());
+    }
+
+    public void onHardMuteStatusChange(@NotNull UUID playerId, boolean muted) {
+        HardMuteStatus.setMuted(playerId, muted);
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            if (viewer.getUniqueId().equals(playerId)) continue;
+            TabPlayer localTarget = TAB.getInstance().getPlayer(playerId);
+            if (muted) {
+                if (viewer.getTabList().containsEntry(playerId)) viewer.getTabList().updateListed(playerId, false);
+            } else if (localTarget != null && shouldSee(viewer, localTarget)) {
+                if (viewer.getTabList().containsEntry(playerId)) viewer.getTabList().updateListed(playerId, true);
+                else viewer.getTabList().addEntry(getAddInfoData(localTarget, viewer));
+            } else if (proxy != null) {
+                ProxyPlayer remoteTarget = proxy.getProxyPlayers().get(playerId);
+                if (remoteTarget != null && shouldSee(viewer, remoteTarget)) {
+                    if (viewer.getTabList().containsEntry(playerId)) viewer.getTabList().updateListed(playerId, true);
+                    else viewer.getTabList().addEntry(remoteTarget.asEntry());
+                }
+            }
+        }
     }
 
     @Override
@@ -270,6 +296,7 @@ public class GlobalPlayerList extends RefreshableFeature implements JoinListener
         // [6b6t patch 6b6t.5] Every entry TAB adds for a remote copy must respect hiding, including
         // same-server self-repair: adding that entry would override the backend's unlisted bot.
         if (viewer.botFlags.hidesBots() && botFilter.hides(true, true, botFilter.getRemote().isBot(target.getUniqueId()))) return false;
+        if (!HardMuteStatus.shouldShow(viewer.getUniqueId(), target.getUniqueId())) return false;
         return viewer.server.canSee(target.server) && (!target.isVanished() || viewer.hasPermission(TabConstants.Permission.SEE_VANISHED));
     }
 

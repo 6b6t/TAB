@@ -10,6 +10,7 @@ import com.velocitypowered.proxy.protocol.packet.chat.ComponentHolder;
 import lombok.NonNull;
 import me.neznamy.tab.shared.TAB;
 import me.neznamy.tab.shared.chat.component.TabComponent;
+import me.neznamy.tab.shared.features.globalplayerlist.HardMuteStatus;
 import me.neznamy.tab.shared.features.layout.LayoutManagerImpl;
 import me.neznamy.tab.shared.platform.TabPlayer;
 import me.neznamy.tab.shared.platform.decorators.TrackedTabList;
@@ -128,6 +129,7 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
     @NotNull
     public Object onPacketSend(@NonNull Object packet) {
         if (packet instanceof LegacyPlayerListItemPacket listItem) {
+            // Legacy clients need PlayerInfo to spawn the entity; leave their entries intact to preserve gameplay.
             for (LegacyPlayerListItemPacket.Item item : listItem.getItems()) {
                 if (listItem.getAction() == UPDATE_DISPLAY_NAME || listItem.getAction() == ADD_PLAYER) {
                     TabComponent forcedDisplayName = getForcedDisplayNames().get(item.getUuid());
@@ -149,6 +151,7 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
                 }
             }
         } else if (packet instanceof UpsertPlayerInfoPacket update) {
+            int hardMutedEntriesUnlisted = 0;
             for (UpsertPlayerInfoPacket.Entry item : update.getEntries()) {
                 if (update.getActions().contains(UpsertPlayerInfoPacket.Action.UPDATE_DISPLAY_NAME)) {
                     TabComponent forcedDisplayName = getForcedDisplayNames().get(item.getProfileId());
@@ -171,10 +174,22 @@ public class VelocityTabList extends TrackedTabList<VelocityTabPlayer> {
                         item.setListed(false);
                     }
                 }
+                if (item.getProfileId() != null
+                        && !HardMuteStatus.shouldShow(player.getUniqueId(), item.getProfileId())
+                        && (update.getActions().contains(UpsertPlayerInfoPacket.Action.ADD_PLAYER)
+                                || update.getActions().contains(UpsertPlayerInfoPacket.Action.UPDATE_LISTED))) {
+                    item.setListed(false);
+                    hardMutedEntriesUnlisted++;
+                }
                 if (update.getActions().contains(UpsertPlayerInfoPacket.Action.ADD_PLAYER)) {
                     onClientAdd(item.getProfileId()); // [6b6t patch 6b6t.7]
                     TAB.getInstance().getFeatureManager().onEntryAdd(player, item.getProfileId(), item.getProfile().getName());
                 }
+            }
+            if (hardMutedEntriesUnlisted > 0) {
+                ((VelocityPlatform) TAB.getInstance().getPlatform()).getPlugin().getLogger().debug(
+                        "TAB hard-mute: unlisted {} player-info entr(y/ies) in outgoing packet",
+                        hardMutedEntriesUnlisted);
             }
         } else if (packet instanceof RemovePlayerInfoPacket remove) {
             onClientRemove(remove.getProfilesToRemove()); // [6b6t patch 6b6t.7]

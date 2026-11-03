@@ -36,6 +36,8 @@ import java.nio.file.Path;
 @Getter
 public class VelocityTAB {
 
+    private HardMuteStatusReader hardMuteStatusReader;
+
     /** ProxyServer instance */
     @Inject private ProxyServer server;
     
@@ -57,6 +59,8 @@ public class VelocityTAB {
     @Subscribe
     public void onProxyInitialization(@Nullable ProxyInitializeEvent event) {
         if (ReflectionUtils.classExists("com.velocitypowered.proxy.connection.player.bossbar.BossBarManager")) {
+            hardMuteStatusReader = new HardMuteStatusReader(this);
+            hardMuteStatusReader.start();
             TAB.create(new VelocityPlatform(this));
         } else {
             logger.error("====================================================================================================");
@@ -74,6 +78,7 @@ public class VelocityTAB {
      */
     @Subscribe
     public void onProxyShutdown(@Nullable ProxyShutdownEvent event) {
+        if (hardMuteStatusReader != null) hardMuteStatusReader.close();
         if (TAB.getInstance() == null) return;
         // Fix race condition as Velocity calls DisconnectEvent for each player before this event
         TAB.getInstance().getCPUManager().runTask(() -> TAB.getInstance().unload());

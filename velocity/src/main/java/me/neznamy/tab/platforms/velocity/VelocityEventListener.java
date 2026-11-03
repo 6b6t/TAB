@@ -89,6 +89,14 @@ public class VelocityEventListener implements EventListener<Player> {
                 }
             }
         });
+        VelocityTAB velocityTab = ((VelocityPlatform) tab.getPlatform()).getPlugin();
+        HardMuteStatusReader reader = velocityTab.getHardMuteStatusReader();
+        if (reader != null) {
+            velocityTab.getServer().getScheduler()
+                    .buildTask(velocityTab, () -> reader.reconcileViewer(e.getPlayer()))
+                    .delay(1, java.util.concurrent.TimeUnit.SECONDS)
+                    .schedule();
+        }
     }
 
     /**
